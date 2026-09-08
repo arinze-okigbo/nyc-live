@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nyc-live dashboard</title>
+    <link rel="preconnect" href="https://unpkg.com" crossorigin />
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+    <link rel="stylesheet" href="/style.css" />
+    <!-- Pinned CDN versions. No API key is used or needed: the basemap style is
+         OpenFreeMap's keyless "liberty" style. -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <script defer src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script defer src="https://unpkg.com/deck.gl@9.0.0/dist.min.js"></script>
+    <script defer src="/app.js"></script>
+  </head>
+  <body>
+    <header id="topbar">
+      <h1>nyc-live</h1>
+      <span id="weather-badge" class="badge" data-status="loading">weather: loading…</span>
+      <span id="health-badge" class="badge" data-status="loading">feeds: loading…</span>
+      <span id="connection-badge" class="badge" data-mode="connecting">connecting…</span>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <main>
+      <div id="map" aria-label="Map of live New York City feeds"></div>
+      <aside id="panel">
+        <h2>Layers</h2>
+        <p class="hint">
+          Each layer shows its own feed status. A <b>stale</b> layer is the last good
+          snapshot (its time is shown); an <b>error</b> layer is hidden entirely — nothing
+          is ever drawn from placeholder data.
+        </p>
+        <ul id="layers"></ul>
+        <h2>Legend</h2>
+        <ul class="legend">
+          <li><span class="swatch" style="background:#f4d35e"></span> subway train (next stop)</li>
+          <li><span class="swatch heat"></span> camera density (people + vehicles)</li>
+          <li><span class="swatch" style="background:#ef476f"></span> 311 service request</li>
+          <li><span class="swatch" style="background:#118ab2"></span> Citi Bike (blue = full,
+            grey = empty)</li>
+          <li><span class="swatch" style="background:#8d99ae"></span> DOT camera</li>
+        </ul>
+        <p class="hint" id="updated">no data yet</p>
+      </aside>
+    </main>
+  </body>
+</html>
