@@ -50,6 +50,15 @@ class Settings(BaseSettings):
         default="https://data.cityofnewyork.us", alias="NYC_LIVE_SOCRATA_BASE"
     )
     weather_base: str = Field(default="https://api.weather.gov", alias="NYC_LIVE_WEATHER_BASE")
+    mta_bus_time_base: str = Field(
+        default="https://bustime.mta.info/api/siri",
+        alias="NYC_LIVE_MTA_BUS_TIME_BASE",
+        description=(
+            "MTA Bus Time SIRI base. The bus feed is a deferred, key-gated stub, but its "
+            "URL is configurable like every other upstream so it cannot repeat the "
+            "import-time binding that made mta_subway_stops unredirectable."
+        ),
+    )
 
     live_tests: bool = Field(default=False, alias="NYC_LIVE_TESTS")
 
