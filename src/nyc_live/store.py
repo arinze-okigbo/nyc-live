@@ -1,0 +1,196 @@
+"""DuckDB store: applies the frozen schema, records telemetry, archives to Parquet.
+
+One connection per process, guarded by an asyncio-agnostic threading lock
+(DuckDB connections are not thread-safe). Long-running writers (nyc-vision)
+own their process's Store; readers (nyc-mcp, nyc-dash) open read-only.
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+import time
+from collections.abc import Iterable, Sequence
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import duckdb
+
+from nyc_live.contracts import (
+    DUCKDB_SCHEMA,
+    PARQUET_ARCHIVE_TABLES,
+    SCHEMA_VERSION,
+    WAREHOUSE_READ_ONLY_TABLES,
+    CameraFrameFetch,
+    DensitySample,
+    FeedError,
+    FeedName,
+    WarehouseResult,
+    now_utc,
+)
+
+_FORBIDDEN_SQL = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|export|import|install|load|"
+    r"pragma|set|call|truncate|vacuum|merge|replace)\b",
+    re.IGNORECASE,
+)
+
+
+class Store:
+    def __init__(self, path: Path | str = ":memory:", *, read_only: bool = False) -> None:
+        self.path = Path(path) if path != ":memory:" else None
+        self.read_only = read_only
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self.conn = duckdb.connect(str(path), read_only=read_only)
+        if not read_only:
+            self._apply_schema()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def _apply_schema(self) -> None:
+        with self._lock:
+            for stmt in DUCKDB_SCHEMA:
+                self.conn.execute(stmt)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO schema_meta VALUES ('schema_version', ?)",
+                [str(SCHEMA_VERSION)],
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            self.conn.close()
+
+    def __enter__(self) -> Store:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    # -- generic -----------------------------------------------------------
+
+    def execute(self, sql: str, params: Sequence[Any] | None = None) -> list[tuple[Any, ...]]:
+        with self._lock:
+            return self.conn.execute(sql, params or []).fetchall()
+
+    def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> int:
+        rows = list(rows)
+        if not rows:
+            return 0
+        with self._lock:
+            self.conn.executemany(sql, rows)
+        return len(rows)
+
+    def tables(self) -> list[str]:
+        return [r[0] for r in self.execute("SELECT table_name FROM duckdb_tables() ORDER BY 1")]
+
+    # -- telemetry ---------------------------------------------------------
+
+    def record_feed_fetch(
+        self,
+        feed: FeedName,
+        *,
+        ok: bool,
+        latency_ms: float | None,
+        record_count: int | None = None,
+        status_code: int | None = None,
+        error: FeedError | None = None,
+    ) -> None:
+        self.execute(
+            "INSERT INTO feed_fetches VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                feed.value,
+                now_utc(),
+                ok,
+                status_code
+                if status_code is not None
+                else (error.upstream_status if error else None),
+                latency_ms,
+                record_count,
+                error.kind.value if error else None,
+                error.message if error else None,
+            ],
+        )
+
+    def record_frame_fetches(self, rows: Iterable[CameraFrameFetch]) -> int:
+        return self.executemany(
+            "INSERT INTO camera_frame_fetches VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                (r.camera_id, r.ts, r.ok, r.status_code, r.latency_ms, r.byte_size, r.error)
+                for r in rows
+            ),
+        )
+
+    def insert_density_samples(self, rows: Iterable[DensitySample]) -> int:
+        return self.executemany(
+            "INSERT OR REPLACE INTO density_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    r.camera_id,
+                    r.ts,
+                    r.cls.value,
+                    r.count,
+                    r.confidence_mean,
+                    r.bbox_area_frac_mean,
+                    r.model,
+                    r.inference_ms,
+                    r.frame_w,
+                    r.frame_h,
+                )
+                for r in rows
+            ),
+        )
+
+    # -- warehouse (read-only SQL for the query_warehouse tool) ------------
+
+    def query_readonly(self, sql: str, *, max_rows: int = 500) -> WarehouseResult:
+        """SELECT-only. Rejects DML/DDL keywords and multi-statement input up front."""
+        cleaned = sql.strip().rstrip(";").strip()
+        if ";" in cleaned:
+            raise ValueError("only a single statement is allowed")
+        if not re.match(r"^(select|with)\b", cleaned, re.IGNORECASE):
+            raise ValueError("only SELECT / WITH queries are allowed")
+        if _FORBIDDEN_SQL.search(cleaned):
+            raise ValueError("query contains a forbidden keyword; the warehouse is read-only")
+        referenced = {
+            m.lower()
+            for m in re.findall(r"\b(?:from|join)\s+([a-zA-Z_][\w.]*)", cleaned, re.IGNORECASE)
+        }
+        unknown = {t for t in referenced if t not in WAREHOUSE_READ_ONLY_TABLES and "." not in t}
+        if unknown:
+            raise ValueError(f"unknown or non-queryable table(s): {sorted(unknown)}")
+        started = time.perf_counter()
+        with self._lock:
+            cur = self.conn.execute(f"SELECT * FROM ({cleaned}) LIMIT {max_rows + 1}")
+            columns = [d[0] for d in cur.description or []]
+            rows = cur.fetchall()
+        truncated = len(rows) > max_rows
+        rows = rows[:max_rows]
+        return WarehouseResult(
+            sql=cleaned,
+            columns=columns,
+            rows=[list(r) for r in rows],
+            row_count=len(rows),
+            truncated=truncated,
+            elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+
+    # -- parquet archive ---------------------------------------------------
+
+    def archive_day(self, table: str, day: date, archive_dir: Path) -> Path:
+        """Write one day of an append-only table to Parquet. Idempotent per (table, day)."""
+        if table not in PARQUET_ARCHIVE_TABLES:
+            raise ValueError(f"{table} is not an archivable table")
+        ts_col = "observed_at" if table == "weather_observations" else "ts"
+        out_dir = archive_dir / table
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{day.isoformat()}.parquet"
+        with self._lock:
+            self.conn.execute(
+                f"COPY (SELECT * FROM {table} WHERE CAST({ts_col} AS DATE) = ?) "
+                f"TO '{out}' (FORMAT PARQUET)",
+                [day],
+            )
+        return out

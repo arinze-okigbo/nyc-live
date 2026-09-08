@@ -1,0 +1,107 @@
+[project]
+name = "nyc-live"
+version = "0.1.0"
+description = "Core library for nyc-live: frozen contracts, feed adapters, cache, DuckDB store, service layer."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "duckdb>=1.0",
+    "gtfs-realtime-bindings>=1.0",
+    "protobuf>=4.25",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+nyc-smoke = "nyc_live.smoke:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "pyright>=1.1.370",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nyc_live"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+nyc-live = { workspace = true }
+
+[tool.uv]
+default-groups = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "pyright>=1.1.370",
+]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "packages/*/src", "tests"]
+extend-exclude = ["data", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ASYNC", "T20", "PL"]
+ignore = [
+    "PLR0913", # too many arguments: adapters take explicit config
+    "PLR2004", # magic values in tests / thresholds
+    "RUF012",  # mutable class attrs: pydantic handles these
+    "E501",    # formatter owns line length
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T20", "PLR", "ASYNC"]
+"src/nyc_live/smoke.py" = ["T20"]
+"packages/*/src/*/__main__.py" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nyc_live", "nyc_mcp", "nyc_vision", "nyc_dash"]
+
+# ---------------------------------------------------------------------------
+# pyright
+# ---------------------------------------------------------------------------
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+include = ["src", "packages/*/src", "tests"]
+exclude = ["**/__pycache__", "data", ".venv"]
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
+reportUnnecessaryTypeIgnoreComment = "warning"
+reportPrivateImportUsage = false
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = [
+    "live: hits a real upstream endpoint (skipped unless NYC_LIVE_TESTS=1)",
+    "slow: takes more than a few seconds",
+]
+filterwarnings = ["error::DeprecationWarning:nyc_live.*"]
