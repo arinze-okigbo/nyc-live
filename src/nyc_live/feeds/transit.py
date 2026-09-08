@@ -8,9 +8,12 @@ Upstreams (no API key required)
   ``ErrorKind.NOT_FOUND`` naming the slug. A failed slug never yields an empty snapshot.
 * Alerts: ``{settings.mta_gtfs_base}/camsys%2Fsubway-alerts`` (different prefix; the
   ``%2F`` is part of the path and is sent verbatim).
-* Static GTFS (stops): ``https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip``
+* Static GTFS (stops): ``settings.mta_static_gtfs_url``, which defaults to
+  ``STATIC_GTFS_URL`` = ``https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip``
   (verified 2026-09-08: HTTP 200, ``application/zip``, ~5.6 MB, ``stops.txt`` has ~1490
   rows with ``stop_id,stop_name,stop_lat,stop_lon,location_type,parent_station``).
+  Like every other upstream here the URL is read from ``Settings`` at fetch time, so
+  ``NYC_LIVE_MTA_STATIC_GTFS_URL`` can redirect or kill this feed.
   The legacy ``web.mta.info/developers/data/nyct/subway/google_transit.zip`` returns 403
   from MTA and must not be used. If the S3 zip is unreachable or is not a zip containing
   ``stops.txt`` the adapter raises; it never falls back to a bundled copy.
@@ -90,6 +93,8 @@ SUBWAY_FEED_SLUGS: tuple[str, ...] = (
 )
 ALERTS_SLUG = "camsys%2Fsubway-alerts"
 STATIC_GTFS_URL = "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip"
+"""Documented default only; it is the default of ``Settings.mta_static_gtfs_url``.
+Adapters resolve the URL from settings at fetch time, never from this constant."""
 
 _DIRECTION_RE = re.compile(r"\.{1,2}([NS])(?=[0-9A-Z]|$)")
 _STOPS_REQUIRED_COLUMNS = ("stop_id", "stop_name", "stop_lat", "stop_lon")
@@ -670,18 +675,26 @@ class SubwayAlertsAdapter(_BaseAdapter):
 
 
 class SubwayStopsAdapter(_BaseAdapter):
-    """Static GTFS ``stops.txt`` (plus derived routes) from the MTA S3 bucket."""
+    """Static GTFS ``stops.txt`` (plus derived routes) from the MTA S3 bucket.
+
+    The URL is resolved from ``settings.mta_static_gtfs_url`` at fetch time, exactly like
+    the realtime adapters resolve ``settings.mta_gtfs_base``, so ``NYC_LIVE_MTA_STATIC_GTFS_URL``
+    can redirect or kill this feed. ``STATIC_GTFS_URL`` below is only the documented default
+    that the ``Settings`` field defaults to; nothing reads it at fetch time.
+    """
 
     name = FeedName.MTA_SUBWAY_STOPS
     ttl = DEFAULT_TTL[FeedName.MTA_SUBWAY_STOPS]
-    source_url = STATIC_GTFS_URL
+
+    @property
+    def source_url(self) -> str:
+        return self.settings.mta_static_gtfs_url
 
     async def fetch(self) -> Snapshot[SubwayStop]:
         started = time.perf_counter()
-        raw = await self._raw(self.source_url)
-        parsed = await asyncio.to_thread(
-            parse_static_gtfs, raw.body, feed=self.name, url=self.source_url
-        )
+        url = self.source_url
+        raw = await self._raw(url)
+        parsed = await asyncio.to_thread(parse_static_gtfs, raw.body, feed=self.name, url=url)
         if parsed.dropped_out_of_bbox or parsed.dropped_malformed:
             log.warning(
                 "mta_subway_stops: dropped %d stops outside NYC bbox and %d malformed rows",
@@ -694,7 +707,7 @@ class SubwayStopsAdapter(_BaseAdapter):
             feed=self.name,
             fetched_at=raw.fetched_at,
             stale_after=raw.fetched_at + self.ttl,
-            source_url=self.source_url,
+            source_url=url,
             records=parsed.stops,
             upstream_generated_at=raw.last_modified,
             latency_ms=round((time.perf_counter() - started) * 1000, 1),

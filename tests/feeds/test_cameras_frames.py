@@ -334,3 +334,120 @@ async def test_live_frame_fetch_and_cadence(settings: Settings) -> None:
 
     rows = source.drain_telemetry()
     assert len(rows) == 1 and rows[0].ok is True and rows[0].byte_size == first.byte_size
+
+
+# ---------------------------------------------------------------------------
+# Telemetry `error` is a low-cardinality failure mode, not a per-camera sentence
+# (integration defect 5: report.py groups the gate's top errors by this column)
+# ---------------------------------------------------------------------------
+
+CAMS = [
+    "0a1b2c3d-0000-4000-8000-00000000c001",
+    "0a1b2c3d-0000-4000-8000-00000000c002",
+    "0a1b2c3d-0000-4000-8000-00000000c003",
+]
+
+
+def _make_source(
+    client: httpx.AsyncClient, cam_settings: Settings, clock: FakeClock, retries: int = 0
+) -> CameraFrameSource:
+    return CameraFrameSource(
+        client=client,
+        settings=cam_settings.model_copy(update={"http_retries": retries}),
+        clock=clock,
+        limiter=RateLimiter(timedelta(0)),
+    )
+
+
+async def _failing_error(source: CameraFrameSource, camera_id: str) -> str:
+    with pytest.raises(FeedUnavailable):
+        await source.get_frame(camera_id)
+    (row,) = source.drain_telemetry()
+    assert row.ok is False and row.error is not None
+    return row.error
+
+
+async def test_same_transport_failure_on_many_cameras_records_one_error_value(
+    client: httpx.AsyncClient,
+    cam_settings: Settings,
+    clock: FakeClock,
+    respx_mock: respx.MockRouter,
+) -> None:
+    """N cameras failing the same way must produce N rows with an IDENTICAL error value."""
+    source = _make_source(client, cam_settings, clock)
+    errors: list[str] = []
+    for cam in CAMS:
+        respx_mock.get(f"{BASE}/{cam}/image").mock(side_effect=httpx.ProxyError("403 Forbidden"))
+        errors.append(await _failing_error(source, cam))
+
+    assert len(errors) == len(CAMS)
+    assert len(set(errors)) == 1, f"expected one failure mode, got {sorted(set(errors))}"
+    assert errors[0] == "upstream_http: ProxyError"
+
+
+async def test_error_value_is_stable_across_retry_counts(
+    client: httpx.AsyncClient,
+    cam_settings: Settings,
+    clock: FakeClock,
+    respx_mock: respx.MockRouter,
+) -> None:
+    """Attempt counts are volatile; they must not reach the grouping column."""
+    respx_mock.get(FRAME_URL).mock(side_effect=httpx.ConnectTimeout("no route"))
+    one = await _failing_error(_make_source(client, cam_settings, clock, retries=0), CAM)
+    two = await _failing_error(
+        _make_source(client, cam_settings, clock, retries=2), FRAME_URL.split("/")[-2]
+    )
+    assert one == two == "upstream_timeout: ConnectTimeout"
+
+
+async def test_distinct_failure_modes_record_distinct_error_values(
+    client: httpx.AsyncClient,
+    cam_settings: Settings,
+    clock: FakeClock,
+    respx_mock: respx.MockRouter,
+) -> None:
+    source = _make_source(client, cam_settings, clock)
+    cam_403, cam_timeout, cam_404 = CAMS
+    respx_mock.get(f"{BASE}/{cam_403}/image").mock(return_value=httpx.Response(403, text="nope"))
+    respx_mock.get(f"{BASE}/{cam_timeout}/image").mock(side_effect=httpx.ReadTimeout("slow"))
+    respx_mock.get(f"{BASE}/{cam_404}/image").mock(return_value=httpx.Response(404, text="gone"))
+    respx_mock.get(FRAME_URL).mock(
+        return_value=httpx.Response(200, content=b"<html>offline</html>")
+    )
+
+    modes = {
+        "403": await _failing_error(source, cam_403),
+        "timeout": await _failing_error(source, cam_timeout),
+        "404": await _failing_error(source, cam_404),
+        "not_jpeg": await _failing_error(source, CAM),
+    }
+    assert modes == {
+        "403": "upstream_http: 403",
+        "timeout": "upstream_timeout: ReadTimeout",
+        "404": "not_found: 404",
+        "not_jpeg": "upstream_parse: not_jpeg",
+    }
+    assert len(set(modes.values())) == 4
+
+
+async def test_recorded_errors_never_contain_a_url_or_camera_id(
+    client: httpx.AsyncClient,
+    cam_settings: Settings,
+    clock: FakeClock,
+    respx_mock: respx.MockRouter,
+) -> None:
+    source = _make_source(client, cam_settings, clock)
+    cam_502, cam_429, cam_proxy = CAMS
+    respx_mock.get(f"{BASE}/{cam_502}/image").mock(return_value=httpx.Response(502))
+    respx_mock.get(f"{BASE}/{cam_429}/image").mock(return_value=httpx.Response(429))
+    respx_mock.get(f"{BASE}/{cam_proxy}/image").mock(side_effect=httpx.ProxyError("403 Forbidden"))
+    respx_mock.get(FRAME_URL).mock(return_value=httpx.Response(200, content=b"\x89PNG\r\n\x1a\n"))
+
+    errors = [await _failing_error(source, cam) for cam in (*CAMS, CAM)]
+    for error in errors:
+        assert "://" not in error and "webcams" not in error and BASE not in error
+        assert "/" not in error
+        assert not any(cam in error for cam in (*CAMS, CAM))
+        assert "attempt" not in error
+        assert len(error) <= 48
+    assert errors[:3] == ["upstream_http: 502", "rate_limited: 429", "upstream_http: ProxyError"]

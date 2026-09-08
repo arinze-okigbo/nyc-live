@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
@@ -202,6 +203,44 @@ def jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
             return (width, height) if width and height else None
         i += 2 + seg_len
     return None
+
+
+# ---------------------------------------------------------------------------
+# Telemetry failure modes
+# ---------------------------------------------------------------------------
+
+NOT_JPEG_REASON = "not_jpeg"
+"""Reason token for a 2xx body that is not a JPEG stream."""
+
+_ATTEMPT_PREFIX_RE = re.compile(r"^(?P<cls>[A-Za-z_][A-Za-z0-9_]*) after \d+ attempt\(s\)")
+"""Matches the transport-failure message built by `http.get_with_retry`."""
+
+_SAFE_REASON_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
+"""A reason token may only be a bare identifier or number: no URL, id, or free text."""
+
+
+def failure_mode(kind: ErrorKind, reason: str | None = None) -> str:
+    """Build the low-cardinality value stored in `CameraFrameFetch.error`.
+
+    The telemetry column is a GROUP BY key for the gate's "top errors" report, so it
+    must be stable across cameras and attempts. It carries the `ErrorKind` plus one
+    short reason token (an HTTP status or the underlying exception class). Anything
+    volatile - the URL, the camera id, the attempt count, timings, upstream body text -
+    is dropped here; the full message is logged at the point of failure instead, and
+    `camera_id` / `status_code` are already separate columns on the row.
+
+    A reason that is not a bare token is discarded rather than smuggled through.
+    """
+    token = reason if reason is not None and _SAFE_REASON_RE.match(reason) else None
+    return f"{kind.value}: {token}" if token else kind.value
+
+
+def frame_failure_mode(exc: FeedUnavailable) -> str:
+    """Failure mode for a frame fetch that raised: HTTP status if known, else exc class."""
+    if exc.upstream_status is not None:
+        return failure_mode(exc.kind, str(exc.upstream_status))
+    match = _ATTEMPT_PREFIX_RE.match(exc.message)
+    return failure_mode(exc.kind, match.group("cls") if match else None)
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +437,9 @@ class CameraFrameSource:
       in memory only, and evicted once older than ``FRAME_BUFFER_MAX_AGE``.
     * Every upstream attempt appends a ``CameraFrameFetch`` row to an in-memory
       list (``drain_telemetry()``) and, if given, calls ``on_fetch(row)``. This
-      module never opens DuckDB; the caller persists the rows.
+      module never opens DuckDB; the caller persists the rows. A failed row's
+      ``error`` holds a low-cardinality failure mode (see ``failure_mode``), never
+      the per-camera message: the gate report groups the column with ``GROUP BY``.
     * A 404 is ``ErrorKind.NOT_FOUND`` (the id rotated; refresh the list). A body
       without JPEG magic bytes is ``ErrorKind.UPSTREAM_PARSE``.
     """
@@ -498,12 +539,16 @@ class CameraFrameSource:
                 self.client, url, feed=self.feed, retries=self.settings.http_retries
             )
         except FeedUnavailable as exc:
+            mode = frame_failure_mode(exc)
+            log.warning(
+                "frame fetch failed for camera %s (%s) [%s]: %s", camera_id, url, mode, exc.message
+            )
             self._record(
                 camera_id,
                 ok=False,
                 status_code=exc.upstream_status,
                 latency_ms=_elapsed_ms(started),
-                error=f"{exc.kind.value}: {exc.message}",
+                error=mode,
             )
             if exc.kind is ErrorKind.NOT_FOUND:
                 self._buffers.pop(camera_id, None)
@@ -523,13 +568,14 @@ class CameraFrameSource:
                 f"body for camera {camera_id} is not a JPEG "
                 f"(content-type {content_type!r}, {len(data)} bytes)"
             )
+            log.warning("frame fetch failed for camera %s (%s): %s", camera_id, url, message)
             self._record(
                 camera_id,
                 ok=False,
                 status_code=resp.status_code,
                 latency_ms=latency_ms,
                 byte_size=len(data),
-                error=f"{ErrorKind.UPSTREAM_PARSE.value}: {message}",
+                error=failure_mode(ErrorKind.UPSTREAM_PARSE, NOT_JPEG_REASON),
             )
             raise FeedUnavailable(
                 self.feed,

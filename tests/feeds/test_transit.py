@@ -152,7 +152,7 @@ async def test_alerts_replays_recorded_fixture(
 async def test_stops_replays_recorded_trimmed_gtfs(
     mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    route = mock.get(STATIC_GTFS_URL).mock(
+    route = mock.get(settings.mta_static_gtfs_url).mock(
         return_value=httpx.Response(
             200,
             content=STOPS_FIXTURE.read_bytes(),
@@ -167,7 +167,7 @@ async def test_stops_replays_recorded_trimmed_gtfs(
     snap = await adapter.fetch()
     assert route.call_count == 1
     assert snap.feed is FeedName.MTA_SUBWAY_STOPS
-    assert snap.source_url == STATIC_GTFS_URL
+    assert snap.source_url == settings.mta_static_gtfs_url
     assert snap.stale_after == snap.fetched_at + DEFAULT_TTL[FeedName.MTA_SUBWAY_STOPS]
     assert snap.upstream_generated_at == datetime(2026, 8, 27, 15, 2, 11, tzinfo=UTC)
 
@@ -363,11 +363,12 @@ async def test_alerts_404_is_not_found_naming_slug(
 async def test_stops_404_is_not_found(
     mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    mock.get(STATIC_GTFS_URL).mock(return_value=httpx.Response(404))
+    mock.get(settings.mta_static_gtfs_url).mock(return_value=httpx.Response(404))
     adapter = SubwayStopsAdapter(client=client, settings=settings)
     with pytest.raises(FeedUnavailable) as excinfo:
         await adapter.fetch()
-    assert excinfo.value.kind is ErrorKind.NOT_FOUND and excinfo.value.url == STATIC_GTFS_URL
+    assert excinfo.value.kind is ErrorKind.NOT_FOUND
+    assert excinfo.value.url == settings.mta_static_gtfs_url
 
 
 async def test_trips_5xx_retries_then_upstream_http(
@@ -429,7 +430,9 @@ async def test_trips_all_slugs_empty_is_upstream_parse(
 async def test_stops_bad_zip_is_upstream_parse(
     mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
 ) -> None:
-    mock.get(STATIC_GTFS_URL).mock(return_value=httpx.Response(200, text="<html>nope</html>"))
+    mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(200, text="<html>nope</html>")
+    )
     adapter = SubwayStopsAdapter(client=client, settings=settings)
     with pytest.raises(FeedUnavailable) as excinfo:
         await adapter.fetch()
@@ -443,7 +446,9 @@ async def test_stops_zip_without_stops_txt_is_upstream_parse(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("agency.txt", "agency_id,agency_name\nMTA NYCT,MTA New York City Transit\n")
-    mock.get(STATIC_GTFS_URL).mock(return_value=httpx.Response(200, content=buf.getvalue()))
+    mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(200, content=buf.getvalue())
+    )
     adapter = SubwayStopsAdapter(client=client, settings=settings)
     with pytest.raises(FeedUnavailable) as excinfo:
         await adapter.fetch()
@@ -461,13 +466,107 @@ async def test_stops_out_of_bbox_rows_are_dropped(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("stops.txt", stops_txt)  # no trips/stop_times -> routes stay empty
-    mock.get(STATIC_GTFS_URL).mock(return_value=httpx.Response(200, content=buf.getvalue()))
+    mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(200, content=buf.getvalue())
+    )
     adapter = SubwayStopsAdapter(client=client, settings=settings)
     snap = await adapter.fetch()
     ids = {s.stop_id for s in snap.records}
     assert "ZZ1" not in ids and len(ids) == 18
     assert all(s.routes == [] for s in snap.records)
     assert snap.upstream_generated_at is None  # no Last-Modified header in this response
+
+
+# ---------------------------------------------------------------------------
+# Every upstream URL comes from Settings (redirect / kill a feed via env)
+# ---------------------------------------------------------------------------
+
+
+def _zip_with_stops() -> bytes:
+    """The recorded trimmed GTFS zip, re-served under whatever URL a test points at."""
+    return STOPS_FIXTURE.read_bytes()
+
+
+async def test_stops_url_defaults_to_the_s3_zip(
+    mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    """With no override, the adapter requests the verified S3 zip and nothing else."""
+    assert settings.mta_static_gtfs_url == STATIC_GTFS_URL
+    route = mock.get(STATIC_GTFS_URL).mock(
+        return_value=httpx.Response(200, content=_zip_with_stops())
+    )
+    adapter = SubwayStopsAdapter(client=client, settings=settings)
+    assert adapter.source_url == STATIC_GTFS_URL
+    snap = await adapter.fetch()
+    assert route.call_count == 1
+    assert snap.source_url == STATIC_GTFS_URL
+
+
+async def test_stops_url_is_redirected_by_settings(
+    mock: respx.MockRouter, client: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    """NYC_LIVE_MTA_STATIC_GTFS_URL must change the URL actually requested.
+
+    `assert_all_mocked=True` means any request to the S3 default would raise instead of
+    hitting the network, so this fails loudly if the adapter ignores the setting.
+    """
+    override = "http://127.0.0.1:9/redirected/gtfs_subway.zip"
+    redirected = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        NYC_LIVE_DATA_DIR=tmp_path / "data",
+        NYC_LIVE_HTTP_RETRIES=0,
+        NYC_LIVE_MTA_STATIC_GTFS_URL=override,
+    )
+    route = mock.get(override).mock(return_value=httpx.Response(200, content=_zip_with_stops()))
+    adapter = SubwayStopsAdapter(client=client, settings=redirected)
+    assert adapter.source_url == override
+    snap = await adapter.fetch()
+    assert route.call_count == 1
+    assert str(route.calls[0].request.url) == override
+    assert snap.source_url == override
+    assert len(snap.records) == 18
+
+
+async def test_stops_settings_override_reaches_error_urls_too(
+    mock: respx.MockRouter, client: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    """A killed feed reports the redirected URL, which is what `kill a feed via env` needs."""
+    override = "http://127.0.0.1:9/dead.zip"
+    redirected = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        NYC_LIVE_DATA_DIR=tmp_path / "data",
+        NYC_LIVE_HTTP_RETRIES=0,
+        NYC_LIVE_MTA_STATIC_GTFS_URL=override,
+    )
+    mock.get(override).mock(return_value=httpx.Response(404))
+    adapter = SubwayStopsAdapter(client=client, settings=redirected)
+    with pytest.raises(FeedUnavailable) as excinfo:
+        await adapter.fetch()
+    assert excinfo.value.kind is ErrorKind.NOT_FOUND
+    assert excinfo.value.url == override
+
+
+async def test_realtime_urls_are_redirected_by_settings(
+    mock: respx.MockRouter, client: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    """Companion check for the trips/alerts adapters: no hardcoded realtime upstream."""
+    base = "http://127.0.0.1:9/redirected/mtagtfsfeeds"
+    redirected = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        NYC_LIVE_DATA_DIR=tmp_path / "data",
+        NYC_LIVE_HTTP_RETRIES=0,
+        NYC_LIVE_MTA_GTFS_BASE=base,
+    )
+    slug_routes = _mock_all_slugs(mock, redirected, _synthetic_gtfs_feed())
+    alerts_route = mock.get(alerts_url(base)).mock(
+        return_value=httpx.Response(200, content=_synthetic_alerts_feed())
+    )
+    trips_snap = await SubwayTripsAdapter(client=client, settings=redirected).fetch()
+    alerts_snap = await SubwayAlertsAdapter(client=client, settings=redirected).fetch()
+    assert all(r.call_count == 1 for r in slug_routes.values())
+    assert alerts_route.call_count == 1
+    assert trips_snap.source_url.startswith(base)
+    assert alerts_snap.source_url == alerts_url(base)
 
 
 # ---------------------------------------------------------------------------

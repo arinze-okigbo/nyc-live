@@ -16,6 +16,7 @@ file observed the world, and no detector ran.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -108,22 +109,17 @@ async def test_frame_fetch_failures_are_recorded_not_dropped(
     assert rate.rate == 1.0 and rate.rate_pct == 100.0
     assert rate.passes is False, "a 100% failure rate must not pass the <2% gate"
     assert sum(count for _, count in rate.top_errors) == 3
-    assert all("upstream_http" in message for message, _ in rate.top_errors)
+    assert all(message.startswith("upstream_http") for message, _ in rate.top_errors)
     assert "FAIL" in rate.describe()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT (owners: feed-cameras for feeds/cameras.py::CameraFrameSource._record, "
-        "cv-engineer for nyc_vision/report.py::_TOP_ERRORS_SQL): the error column stores "
-        "'{kind}: {message}' with the per-camera URL inside it, so GROUP BY error can never "
-        "aggregate. Over a 24 h run across 50+ cameras `top_errors` returns 5 arbitrary "
-        "singletons instead of the top failure modes."
-    ),
-)
 async def test_top_errors_groups_by_failure_mode(db: Store, pipeline: DensityPipeline) -> None:
-    """Three identical transport failures on three cameras are one failure mode, not three."""
+    """Three identical transport failures on three cameras are one failure mode, not three.
+
+    Regression test for the defect this suite found: `camera_frame_fetches.error` used to
+    hold "{kind}: {message}" with the per-camera URL inside it, so the gate report's
+    `GROUP BY error` could never aggregate and "top errors" was five arbitrary singletons.
+    """
     frames = pipeline.frames
     assert isinstance(frames, CameraFrameSource)
     started = now_utc()
@@ -131,10 +127,24 @@ async def test_top_errors_groups_by_failure_mode(db: Store, pipeline: DensityPip
         with pytest.raises(FeedUnavailable):
             await frames.get_frame(camera_id)
     pipeline.drain_telemetry()
+
     rate = frame_failure_rate(db, started - timedelta(minutes=1))
     assert rate.failures == 3
     assert len(rate.top_errors) == 1, rate.top_errors
-    assert rate.top_errors[0][1] == 3
+    mode, count = rate.top_errors[0]
+    assert count == 3
+    assert mode == "upstream_http: ConnectError", mode
+
+    # the column must stay low-cardinality whatever the upstream says: no URL, no camera
+    # id, no attempt count, no free text. camera_id and status_code are separate columns.
+    for (stored,) in db.execute("SELECT DISTINCT error FROM camera_frame_fetches"):
+        assert isinstance(stored, str)
+        assert len(stored) <= 64, stored
+        assert "http" not in stored.removeprefix("upstream_http"), stored
+        assert "/" not in stored and "int-cam-" not in stored, stored
+        kind, _, reason = stored.partition(": ")
+        assert kind in {k.value for k in ErrorKind}, stored
+        assert reason == "" or re.fullmatch(r"[A-Za-z0-9_.\-]{1,32}", reason), stored
 
 
 async def test_tick_with_an_unreachable_camera_list_writes_nothing(

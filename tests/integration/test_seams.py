@@ -11,12 +11,12 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-import pytest
 from fastmcp import Client
 
 from nyc_dash.api import health_payload
 from nyc_live.config import Settings
 from nyc_live.contracts import FeedName
+from nyc_live.feeds.transit import STATIC_GTFS_URL
 from nyc_live.services import Services, density_now, open_services, warehouse
 from nyc_live.store import Store
 from nyc_mcp.server import create_server
@@ -206,26 +206,27 @@ def test_warehouse_still_allows_subqueries(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- env overrides
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT (owners: feed-transit for feeds/transit.py, orchestrator for config.py): "
-        "SubwayStopsAdapter.source_url is the module constant STATIC_GTFS_URL, with no "
-        "Settings field behind it, so mta_subway_stops is the one feed that cannot be "
-        "redirected or killed by environment - which the Phase 4 brief ('kill one feed via "
-        "env') and any offline test run both need. Every other adapter honours a "
-        "NYC_LIVE_*_BASE setting."
-    ),
-)
 async def test_every_feed_can_be_redirected_by_settings(
     offline_upstreams: int, integration_settings: Settings, tmp_path: Path
 ) -> None:
-    """Point every base URL at a dead local address; every feed must report that address."""
+    """Point every upstream at a dead local address; every feed must report that address.
+
+    Regression test for the defect this suite found: `SubwayStopsAdapter.source_url` was
+    the module constant `STATIC_GTFS_URL`, bound at import with no `Settings` field behind
+    it, so `mta_subway_stops` was the one feed that could not be redirected or killed by
+    environment - which the Phase 4 brief ("kill one feed via env") needs, and which an
+    offline test run needs even more (the default URL is a 5.6 MB S3 download).
+
+    Nothing here may reach a real upstream: every URL points at 127.0.0.1 and the proxy
+    is dead, so a feed that ignored its override could only show up as a non-marker URL
+    or as a `fresh` envelope, and both are asserted against below.
+    """
     marker = f"http://127.0.0.1:{offline_upstreams}/redirected-by-integration-tester"
     redirected = integration_settings.model_copy(
         update={
             "dot_cameras_base": f"{marker}/cameras",
             "mta_gtfs_base": f"{marker}/mta",
+            "mta_static_gtfs_url": f"{marker}/gtfs_subway.zip",
             "citibike_gbfs_root": f"{marker}/gbfs.json",
             "socrata_base": f"{marker}/socrata",
             "weather_base": f"{marker}/weather",
@@ -233,10 +234,32 @@ async def test_every_feed_can_be_redirected_by_settings(
     )
     key_gated = {FeedName.MTA_BUS, FeedName.NY511_CAMERAS}
     async with open_services(redirected, open_store=False, strict=True) as svc:
+        stops_url = svc.registry[FeedName.MTA_SUBWAY_STOPS].adapter.source_url  # type: ignore[attr-defined]
         envelopes = await svc.registry.refresh_all()
+    assert stops_url == f"{marker}/gtfs_subway.zip", (
+        "the stops adapter must resolve its URL from Settings at fetch time"
+    )
+    assert all(env.status == "error" for env in envelopes.values()), (
+        "no feed may succeed when every upstream has been pointed at a dead address"
+    )
     not_redirected = sorted(
         name.value
         for name, env in envelopes.items()
         if name not in key_gated and (env.error is None or marker not in (env.error.url or ""))
     )
     assert not not_redirected, f"feeds that ignored the settings override: {not_redirected}"
+
+
+async def test_the_stops_feed_defaults_to_the_mta_s3_zip(
+    offline_upstreams: int, integration_settings: Settings
+) -> None:
+    """With no override the redirectable URL must still resolve to the real upstream.
+
+    Resolution only; nothing is fetched here, so this downloads nothing even though the
+    default URL is the one host this sandbox can actually reach.
+    """
+    assert Settings(_env_file=None).mta_static_gtfs_url == STATIC_GTFS_URL  # type: ignore[call-arg]
+    async with open_services(integration_settings, open_store=False, strict=True) as svc:
+        adapter = svc.registry[FeedName.MTA_SUBWAY_STOPS].adapter
+        assert adapter.source_url == STATIC_GTFS_URL  # type: ignore[attr-defined]
+    assert STATIC_GTFS_URL == "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip"
