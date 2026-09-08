@@ -94,7 +94,7 @@ def _no_samples(window_start: datetime, window_end: datetime) -> Envelope[Camera
     return _error(
         "nyc-vision has not produced density samples yet "
         f"(no density_samples rows between {window_start:%Y-%m-%d %H:%M:%SZ} and "
-        f"{window_end:%Y-%m-%d %H:%M:%SZ}); run `just vision` to start the detector",
+        f"{window_end:%Y-%m-%d %H:%M:%SZ}); run `just vision run` to start the detector",
         ErrorKind.NOT_CONFIGURED,
     )
 

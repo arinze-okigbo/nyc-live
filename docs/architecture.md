@@ -23,9 +23,21 @@
                  +-----+---------------------------+-----------------+-------+
                        |                           |                 |
              packages/nyc-mcp            packages/nyc-vision   packages/nyc-dash
-             FastMCP tools (Phase 2)     YOLO over frames      FastAPI + MapLibre/Deck.gl
-             Envelope[T] out             (Phase 3, scaffold)   (Phase 4, scaffold)
+             server.py: FastMCP tools    detector.py YOLO      app.py FastAPI + api.py
+             __main__.py stdio/--http    sampling.py           routes + stream.py SSE
+             Envelope[T] out             pipeline.py tick      static/ MapLibre + deck.gl
+                                         report.py, chart.py   Envelope[T] per layer
+                                         writes density_samples,
+                                         camera_frame_fetches, cameras
+                                                 |                     ^
+                                                 +---------------------+
+                                                  density_samples read back
+                                                  through services/density.py
 ```
+
+All three packages are built. What has and has not been verified against real upstreams is in
+`README.md` under Status; the two long-running gates (Phase 3's 24 h run, Phase 4's first
+paint) are documented in `docs/vision.md` and `docs/dashboard.md` and have not been run.
 
 ## Principles
 
@@ -98,10 +110,50 @@ Each takes envelopes or a store and returns an envelope; none fetches an upstrea
 * `services/warehouse.py`: `warehouse(store, sql, max_rows)` runs `Store.query_readonly` (single `SELECT`/`WITH`, allowlisted tables, forbidden-keyword scan) and returns an `Envelope[WarehouseResult]` with `stale_after == fetched_at`. Cells are coerced to JSON-safe values.
 * `services/density.py`: `density_now` and `density_history` aggregate `density_samples` per frame (sum of person counts and of `VEHICLE_CLASSES` counts per `(camera_id, ts)`), then per camera or per `time_bucket`. Camera name and coordinates come from the `cameras` table, with an optional in-memory `Camera` list as a fallback so the tools work before nyc-vision has upserted metadata.
 
-### Density stubs
+### Density with no samples
 
-Phase 3 has not run, so `density_samples` is empty. Both density functions return `status="error"`, `error.kind="not_configured"` with a message naming the empty window; they never return an empty success. A missing store is `error.kind="internal"`. The MCP tools pass the cached DOT camera list as the location fallback (`camera_fallback` in `server.py`).
+`density_samples` is empty until nyc-vision has run against real cameras, which has not happened yet. Both density functions then return `status="error"`, `error.kind="not_configured"` with a message naming the empty window; they never return an empty success. A missing store is `error.kind="internal"`. The MCP tools pass the cached DOT camera list as the location fallback (`camera_fallback` in `server.py`), and the dashboard passes the same list from `api.py::_density`.
 
 ### `packages/nyc-mcp`
 
 `server.py::create_server(services=None, settings=None)` builds the FastMCP server; its lifespan builds `Services` on the first session unless a pre-built one is injected (tests). Tools are registered in four groups (cameras, subway, civic, store-backed) and each returns `Envelope.model_dump(mode="json")`, except `get_camera_frame` (image block plus envelope) and `feed_health` (a plain status dict). Feed failures are never MCP `isError`; that is reserved for invalid arguments. `__main__.py` is the `nyc-mcp` console script: stdio by default, `--http` for Streamable HTTP, logging to stderr. Install instructions and the per-tool reference are in `docs/mcp.md`.
+
+## Phase 3: vision
+
+`packages/nyc-vision` is the only writer of `density_samples` and `camera_frame_fetches`, and it maintains the `cameras` table so aggregates can be located. It is a writer only; the read path is `services/density.py`, which `nyc_vision/service.py` re-exports rather than reimplementing, so the MCP tools, the dashboard and the package cannot disagree about what density means. Full reference in `docs/vision.md`.
+
+### `detector.py`
+
+`Detector` is a protocol over "JPEG bytes in, per-class counts out". `YoloDetector` imports `ultralytics` and `torch` lazily inside `_load()`, so the package and its tests import on a machine with neither and `just check` stays green; only a real detection needs the wheels (the exact `pyproject.toml` lines the orchestrator must add are in `packages/nyc-vision/README.md` and repeated in `docs/vision.md`). The model is loaded once and `detect()` holds a lock, so one instance can be handed to `asyncio.to_thread` from several tasks. `COCO_CLASS_MAP` keeps only the six `contracts.DetectionClass` members; every other COCO class is dropped. `summarize_boxes` is a pure function over the class ids, confidences and boxes, clamping box-area fraction into [0, 1] so a box overhanging the frame cannot produce a value the frozen `DensitySample` bounds would reject. `FakeDetector` (`model_name` prefixed `fake:`, `is_synthetic = True`) exists so the pipeline and the store writes can be tested without torch, and is never wired into a real run.
+
+### `sampling.py`
+
+`select_cameras` is deterministic with no RNG and no borough lookup table. Online, in-bbox cameras are bucketed into a `grid` x `grid` mesh over `contracts.NYC_BBOX` (default 5x5), cells sorted by (row, col) and cameras inside a cell by id, then one camera per cell per pass is taken round-robin. A dense area cannot crowd out a sparse one until the sparse cells are exhausted, and reordering the DOT list upstream does not change the selection. A shortage of eligible cameras is logged through `SelectionStats`, never padded.
+
+### `pipeline.py`
+
+One tick: refresh and stratify the camera list, upsert the selection into `cameras`, fetch frames through `FrameSource.get_frame()` up to `NYC_VISION_CONCURRENCY` in parallel and run the detector in a worker thread behind a lock, write one `DensitySample` per camera per class including zero counts, drain the frame source's `CameraFrameFetch` telemetry into `camera_frame_fetches`, and evict expired frames. The package never builds a DOT image URL, so the 2 s per-camera cadence and the in-memory buffer stay owned by `CameraFrameSource`. A per-camera failure is counted and logged and never raises out of the tick; a detector failure is counted as `TickResult.cameras_failed` and deliberately not written into `camera_frame_fetches`, so a model problem cannot move the frame-fetch gate metric in either direction. `run_forever` measures the interval from the start of the tick so an overrun does not compound, and `maybe_archive` writes yesterday's rows to Parquet once per day through `Store.archive_day`.
+
+### `report.py`, `chart.py`, `__main__.py`
+
+`report.py` measures the gate off the tables and nothing else: `frame_failure_rate` over `camera_frame_fetches`, `cameras_covered` over `density_samples`, and `hourly_rush` for the local-hour profile. An empty window returns zero counts and `None` timestamps and fails the gate rather than reporting 0 %. Every query selects `epoch_ms(ts)` and converts in Python, because DuckDB needs `pytz` to hand back a `TIMESTAMPTZ` and that is not a dependency; local-hour bucketing uses `zoneinfo`, which also keeps the SQL free of the ICU extension. `chart.py` draws the two polylines with Pillow (matplotlib is not a dependency), leaves hours with no frames as gaps, and raises `NoChartData` rather than writing an empty chart. `__main__.py` is the `nyc-vision` console script with `run`, `once`, `report` and `chart`; `run` and `once` open DuckDB read-write, `report` and `chart` open it read-only.
+
+## Phase 4: dashboard
+
+`packages/nyc-dash` is a pure consumer of `nyc_live.services`. It never imports `nyc_live.feeds`, never touches an upstream, and never fabricates a record. Full reference in `docs/dashboard.md`.
+
+### `api.py`
+
+A table of `FeedRoute` records (key, `FeedName`, label, handler, geo support, default limit and radius, aliases, description) is the single source of the dashboard's endpoints, the `/api` index and the SSE event names. Handlers call the same service functions the MCP tools call (`nearby`, `subway_arrivals`, `alerts_near`, `density_now`) and return the `Envelope` untouched; the HTTP layer only serialises it. `not_registered` and `crashed` produce honest error envelopes for a missing adapter module or an unexpected handler exception, so a hole in the registry is visible rather than blank. `health_payload` returns `FeedRegistry.health()` plus the store state in the same shape as the MCP `feed_health` tool.
+
+### `app.py`
+
+`create_app(services=None)` builds the `Services` in the lifespan unless one is injected (tests pass a pre-built one, so no network and no on-disk DuckDB is touched). Routes: `/api` (the route table), `/api/health`, `/api/stream`, `/api/{feed}`, and the static page mounted at `/`. A down feed is HTTP 200 with `status="error"` because the browser needs the envelope to render the layer's pill; 4xx is reserved for bad requests (unknown key, `lat` without `lon`, a geo filter on a feed whose records have no coordinates, out-of-range arguments).
+
+### `stream.py`
+
+`/api/stream` yields a `ready` event, then one event per feed per cycle named by the route key, then a `health` event, then waits `interval_s` in 0.25 s slices with a keepalive comment about every 15 s, checking for client disconnect throughout. A failing feed is pushed as its own error envelope so one dead feed never stops the others. The stream calls the same handlers as `/api/<feed>`, so `CachedFeed` still owns every TTL decision; it is an optimisation over polling those endpoints, and `static/app.js` falls back to `setInterval` polling on the first `EventSource` error.
+
+### `static/`
+
+One `index.html`, one `app.js`, one `style.css`, no build step. MapLibre GL 4.7.1 and deck.gl 9.0.0 come from pinned unpkg URLs and the basemap is OpenFreeMap's keyless `liberty` style, so no API key exists anywhere. Each layer's pill is driven by `envelope.status` and nothing else: `fresh` shows the count and time, `stale` keeps the last good records and shows when they were good plus the refresh error, `error` hides the layer and shows the message. Nothing is ever drawn from placeholder data. If the CDN is unreachable a banner says so and the pills keep working without a map.

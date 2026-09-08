@@ -190,7 +190,7 @@ Parameters: `lat`, `lon`, `radius_m` (default 1000), `camera_id`, `window_s` (de
 
 Returns `Envelope[CameraDensity]` from `FeedName.DENSITY` (60 s TTL): one record per camera with samples in the trailing `window_s`, carrying `person_mean`, `vehicle_mean`, `person_max`, `vehicle_max` (counts per frame), `sample_count`, `latest_ts`, `name`, `lat`, `lon`. Computed by `src/nyc_live/services/density.py` from `density_samples` in DuckDB; aggregates only, no imagery.
 
-When it cannot answer: until nyc-vision (Phase 3) has written rows, `status="error"`, `error.kind="not_configured"` with a message saying no samples exist in the window. That is the expected answer today, not a fault. `error.kind="internal"` means the DuckDB file could not be opened, the query failed, or samples exist but no camera in the window has a location in the `cameras` table.
+When it cannot answer: until nyc-vision has written rows, `status="error"`, `error.kind="not_configured"` with a message saying no samples exist in the window. That is the expected answer today, not a fault: the pipeline is built but has never been run against real cameras (`docs/vision.md`), so the table is empty. `error.kind="internal"` means the DuckDB file could not be opened, the query failed, or samples exist but no camera in the window has a location in the `cameras` table.
 
 ### `density_history`
 
