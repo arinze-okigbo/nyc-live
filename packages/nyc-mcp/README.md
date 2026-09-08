@@ -43,8 +43,11 @@ claude mcp add --transport http nyc-live http://127.0.0.1:8765/mcp
 
 Settings come from the environment or `.env` (see `.env.example` at the repo root).
 Nothing is required for the public feeds; `MTA_BUS_TIME_API_KEY` and `NY511_API_KEY`
-unlock the key-gated ones, which otherwise report `status="error"`,
-`error.kind="not_configured"` in `feed_health`.
+unlock the key-gated ones. Without a key those feeds report `configured: false` in
+`feed_health`, with `status: "never_fetched"` until something tries to read them (no
+tool does today); a read attempt turns that into `status: "error"` with
+`last_error.kind = "not_configured"`. Note that `feed_health` returns `FeedHealth`
+rows rather than an Envelope, so the field is `last_error`, not `error`.
 
 ### DuckDB store
 

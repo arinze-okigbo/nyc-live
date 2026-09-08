@@ -1,6 +1,7 @@
 """NYC DOT traffic cameras: the camera list adapter and the per-camera frame source.
 
-Upstream (verified in the feed-cameras brief; no auth):
+Upstream (endpoints documented in the feed-cameras brief; no auth; not probed live,
+see the field-mapping note below):
 
 * list  : ``{settings.dot_cameras_base}/``            -> JSON array of ~900 cameras
 * frame : ``{settings.dot_cameras_base}/{id}/image``  -> JPEG, refreshes about every 2 s
