@@ -19,7 +19,9 @@ import asyncio
 import io
 import subprocess
 import sys
+import time
 from contextlib import redirect_stdout
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,7 @@ from nyc_live import smoke
 from nyc_live.config import Settings, get_settings
 from nyc_live.contracts import DEFAULT_TTL, ErrorKind, FeedName
 from nyc_live.feeds import ADAPTER_SPECS
+from nyc_live.http import RateLimiter
 from nyc_live.services import build_services, open_services
 from nyc_live.store import Store
 from tests.integration.conftest import REPO_ROOT, check_envelope
@@ -203,23 +206,22 @@ async def test_failed_feed_retries_without_waiting_out_the_cadence_floor(
         assert feed.health().consecutive_failures == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT (owners: feed-micromobility for feeds/micromobility.py, feed-civic for "
-        "feeds/socrata.py and feeds/weather.py): the adapter's own RateLimiter is armed "
-        "before the request and is not released when the request fails, so the SECOND "
-        "refresh of a down feed sleeps for a whole TTL inside CachedFeed._refresh_lock "
-        "(citibike 60 s, nyc_311 300 s, weather 300 s, dohmh_inspections 21600 s). "
-        "nyc-dash /api/<feed> and the /api/stream cycle hang for that long. "
-        "feeds/transit.py already has the fix: RateLimiter.forget(url) on failure."
-    ),
-)
-async def test_down_feed_blocks_the_caller_for_a_whole_ttl(
+async def test_a_down_feed_answers_promptly_and_keeps_its_cadence_floor(
     offline_upstreams: int, integration_settings: Settings
 ) -> None:
-    """The second refresh of a down feed must return promptly, not sleep out its TTL."""
-    blocked: list[str] = []
+    """The second refresh of a down feed must return promptly, not sleep out its TTL.
+
+    Regression test for the defect this suite found: the adapters armed their own
+    `RateLimiter` before the request and never released it on failure, so the second
+    refresh of a down feed slept a whole TTL inside `CachedFeed._refresh_lock`
+    (citibike 60 s, nyc_311 300 s, weather 300 s, dohmh_inspections 21600 s) and hung
+    `/api/<feed>` and the `/api/stream` cycle with it.
+
+    The second half of the test is the other side of that coin: the cadence floor must
+    still exist and must still block on the SUCCESS path, so the bug cannot be "fixed"
+    by deleting the limiter.
+    """
+    slow: list[str] = []
     async with open_services(integration_settings, open_store=False, strict=True) as svc:
         for name in (
             FeedName.CITIBIKE,
@@ -229,13 +231,28 @@ async def test_down_feed_blocks_the_caller_for_a_whole_ttl(
         ):
             feed = svc.registry[name]
             assert (await feed.get(force=True)).status == "error"
+            started = time.perf_counter()
             try:
-                await asyncio.wait_for(feed.get(force=True), timeout=RETRY_BUDGET_S)
+                again = await asyncio.wait_for(feed.get(force=True), timeout=RETRY_BUDGET_S)
             except TimeoutError:
-                blocked.append(f"{name.value} (ttl {DEFAULT_TTL[name].total_seconds():.0f} s)")
-    assert not blocked, (
-        f"feeds that did not answer within {RETRY_BUDGET_S} s after a failed fetch: {blocked}"
+                slow.append(f"{name.value} (ttl {DEFAULT_TTL[name].total_seconds():.0f} s)")
+                continue
+            assert again.status == "error", "a down feed must not turn into a fresh one"
+            assert time.perf_counter() - started < RETRY_BUDGET_S
+            limiter = getattr(feed.adapter, "_limiter", None)
+            assert isinstance(limiter, RateLimiter), (
+                f"{name.value} no longer owns a RateLimiter: a failed fetch must release the "
+                "cadence floor, not do away with it"
+            )
+            assert limiter.min_interval_s == DEFAULT_TTL[name].total_seconds()
+    assert not slow, (
+        f"feeds that did not answer within {RETRY_BUDGET_S} s after a failed fetch: {slow}"
     )
+
+    # the floor itself, in the shared primitive every adapter uses, still blocks
+    floor = RateLimiter(timedelta(seconds=0.25))
+    assert await floor.wait("some-url") == 0.0
+    assert await floor.wait("some-url") >= 0.2, "the cadence floor no longer delays a second call"
 
 
 # --------------------------------------------------------------------------- smoke

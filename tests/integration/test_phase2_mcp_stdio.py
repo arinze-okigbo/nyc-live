@@ -71,6 +71,15 @@ WRITE_ATTEMPTS: tuple[str, ...] = (
     "COPY cameras TO '/tmp/nyc-live-integration-should-not-exist.csv'",
 )
 
+ESCAPE_ATTEMPTS: tuple[tuple[str, str], ...] = (
+    ("SELECT * FROM '/etc/hostname'", "only plain table names may follow FROM / JOIN"),
+    ("SELECT * FROM read_csv('/etc/hostname')", "only plain table names may follow FROM / JOIN"),
+    ("SELECT * FROM duckdb_tables()", "only plain table names may follow FROM / JOIN"),
+    ("SELECT * FROM pg_catalog.pg_tables", "unknown or non-queryable table(s)"),
+    ("SELECT * FROM schema_meta", "unknown or non-queryable table(s)"),
+)
+"""Reads that must not escape the allow-list, asserted against the deployed server."""
+
 
 @pytest.fixture(scope="module")
 def mcp_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
@@ -180,6 +189,36 @@ async def test_query_warehouse_rejects_writes(mcp: Client, sql: str) -> None:
     assert payload["error"]["message"], sql
 
 
+@pytest.mark.parametrize(
+    ("sql", "expected"), ESCAPE_ATTEMPTS, ids=[s[:28] for s, _ in ESCAPE_ATTEMPTS]
+)
+async def test_query_warehouse_rejects_reads_outside_the_allow_list(
+    mcp: Client, sql: str, expected: str
+) -> None:
+    """No file path, table function or dotted catalog name gets past the deployed tool."""
+    payload = envelope_of(await mcp.call_tool("query_warehouse", {"sql": sql}))
+    assert payload["status"] == "error", f"query_warehouse accepted {sql!r}"
+    assert payload["records"] == []
+    assert expected in payload["error"]["message"], payload["error"]["message"]
+
+
+async def test_query_warehouse_runs_a_with_query_over_stdio(mcp: Client) -> None:
+    """A WITH query that references its own CTE is what the tool docstring promises."""
+    payload = envelope_of(
+        await mcp.call_tool(
+            "query_warehouse",
+            {
+                "sql": (
+                    "WITH frames AS (SELECT camera_id, ts FROM density_samples) "
+                    "SELECT count(*) AS n FROM frames"
+                )
+            },
+        )
+    )
+    assert payload["status"] == "fresh", payload["error"]
+    assert payload["records"][0]["rows"] == [[18]]
+
+
 async def test_the_warehouse_is_still_intact_after_the_write_attempts(mcp: Client) -> None:
     """Belt and braces: the tables the writes targeted are unchanged and the store is read-only."""
     payload = envelope_of(
@@ -225,10 +264,7 @@ async def test_invalid_arguments_are_tool_errors_not_envelopes(mcp: Client) -> N
     """`isError` is reserved for bad arguments; a down feed is never an isError."""
     bad = await mcp.call_tool("get_camera_frame", {}, raise_on_error=False)
     assert bad.is_error, "get_camera_frame with neither camera_id nor lat/lon must be a ToolError"
-    # subway_alerts, not citibike_status: a second call to a Citi Bike / 311 / weather /
-    # inspections tool stalls this server for a whole TTL, see the xfail in
-    # tests/integration/test_phase1_feeds.py::test_down_feed_blocks_the_caller_for_a_whole_ttl.
-    down = await mcp.call_tool("subway_alerts", {}, raise_on_error=False)
+    down = await mcp.call_tool("citibike_status", {}, raise_on_error=False)
     assert not down.is_error, "a feed outage must be an envelope, not an MCP error"
     assert envelope_of(down)["status"] == "error"
 

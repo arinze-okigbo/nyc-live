@@ -77,62 +77,130 @@ def test_the_three_timestamptz_workarounds_agree(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- warehouse guard
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT (owner: orchestrator, src/nyc_live/store.py::Store.query_readonly): the "
-        "referenced-table regex only matches bare identifiers, so a quoted path after FROM "
-        "is never checked against WAREHOUSE_READ_ONLY_TABLES. DuckDB's replacement scan then "
-        "reads it, so the query_warehouse MCP tool can read any CSV / Parquet / JSON file the "
-        "server process can open. Writes are blocked; reads are not."
-    ),
-)
-def test_warehouse_rejects_reading_files_off_the_local_disk(tmp_path: Path) -> None:
-    """DuckDB's replacement scan turns a quoted path into a table; the guard must catch it."""
+def guard_error(store: Store, sql: str) -> str:
+    """Run `sql` through the real `query_warehouse` service; it must come back rejected."""
+    env = warehouse(store, sql)
+    assert env.status == "error", (
+        f"query_warehouse accepted {sql!r} and returned "
+        f"{env.records[0].rows if env.records else None}"
+    )
+    assert env.records == []
+    assert env.error is not None
+    return env.error.message
+
+
+def guard_rows(store: Store, sql: str) -> list[list[object]]:
+    """Run `sql` through the real `query_warehouse` service; it must be accepted."""
+    env = warehouse(store, sql)
+    assert env.status == "fresh", env.error.message if env.error else ""
+    assert len(env.records) == 1
+    return env.records[0].rows
+
+
+def test_warehouse_refuses_to_read_files_and_table_functions(tmp_path: Path) -> None:
+    """DuckDB's replacement scan turns a quoted path into a table; the guard catches it."""
     secret = tmp_path / "secret.csv"
     secret.write_text("a,b\n1,2\n")
     with Store(tmp_path / "guard.duckdb") as store:
-        env = warehouse(store, f"SELECT * FROM '{secret}'")
-    assert env.status == "error", (
-        f"query_warehouse read {secret} off disk and returned "
-        f"{env.records[0].rows if env.records else None}"
-    )
+        for sql in (
+            f"SELECT * FROM '{secret}'",
+            f"SELECT * FROM read_csv('{secret}')",
+            f"SELECT * FROM read_csv_auto('{secret}') JOIN cameras ON true",
+            "SELECT * FROM duckdb_tables()",
+            "SELECT * FROM glob('/etc/*')",
+        ):
+            message = guard_error(store, sql)
+            assert "only plain table names may follow FROM / JOIN" in message, sql
+        assert guard_rows(store, "SELECT count(*) FROM cameras") == [[0]]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT (owner: orchestrator, src/nyc_live/store.py::Store.query_readonly): the "
-        "table allow-list treats a CTE alias as an unknown table, so every WITH query that "
-        "references its own CTE is rejected - although the query_warehouse tool docstring "
-        "(nyc_mcp/server.py) advertises 'a single SELECT/WITH statement'."
-    ),
-)
-def test_warehouse_accepts_a_with_query_that_uses_its_own_cte(tmp_path: Path) -> None:
+def test_warehouse_accepts_with_queries_that_use_their_own_cte(tmp_path: Path) -> None:
+    """The tool docstring advertises 'a single SELECT/WITH statement'; WITH really works."""
     with Store(tmp_path / "cte.duckdb") as store:
         seed_density(store)
-        env = warehouse(
+        assert guard_rows(
             store,
             "WITH frames AS (SELECT camera_id, ts FROM density_samples) "
             "SELECT count(*) FROM frames",
+        ) == [[18]]
+        assert guard_rows(
+            store,
+            "WITH counted (camera_id, n) AS ("
+            "  SELECT camera_id, count(*) FROM density_samples GROUP BY camera_id"
+            ") SELECT count(*) FROM counted",
+        ) == [[2]]
+        assert guard_rows(
+            store,
+            "WITH RECURSIVE series(n) AS ("
+            "  SELECT 1 UNION ALL SELECT n + 1 FROM series WHERE n < 3"
+            ") SELECT sum(n) FROM series",
+        ) == [[6]]
+        # a CTE name is only a target inside its own query, not a way in to another table
+        assert "unknown or non-queryable table(s): ['frames']" in guard_error(
+            store, "SELECT count(*) FROM frames"
         )
-    assert env.status == "fresh", env.error.message if env.error else ""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFECT (owner: orchestrator, src/nyc_live/store.py::_FORBIDDEN_SQL): the forbidden "
-        "keyword regex is applied to the whole statement including string literals, so a "
-        "legitimate SELECT whose WHERE clause contains 'set', 'insert', 'copy' etc. in a "
-        "quoted value is rejected as a write. The not-configured feed error message stored "
-        "in feed_fetches literally contains 'is not set'."
-    ),
-)
-def test_warehouse_accepts_a_keyword_inside_a_string_literal(tmp_path: Path) -> None:
+def test_warehouse_treats_string_literals_as_data_not_syntax(tmp_path: Path) -> None:
+    """Keywords and semicolons inside quoted values are content; the guard must not trip."""
     with Store(tmp_path / "literal.duckdb") as store:
-        env = warehouse(store, "SELECT count(*) FROM feed_fetches WHERE error LIKE '%is not set%'")
-    assert env.status == "fresh", env.error.message if env.error else ""
+        seed_density(store)
+        # the not-configured message this repo writes into feed_fetches contains "is not set"
+        assert guard_rows(
+            store, "SELECT count(*) FROM feed_fetches WHERE error LIKE '%is not set%'"
+        ) == [[0]]
+        assert guard_rows(
+            store, "SELECT count(*) FROM cameras WHERE name = 'a; drop table cameras'"
+        ) == [[0]]
+        assert guard_rows(
+            store, "SELECT count(*) FROM density_samples WHERE model = 'fake:insert-copy-set'"
+        ) == [[0]]
+        assert guard_rows(store, "SELECT count(*) FROM cameras /* a block comment */") == [[2]]
+
+
+def test_warehouse_still_blocks_writes_multi_statements_and_unknown_tables(
+    tmp_path: Path,
+) -> None:
+    """The guard's own job, re-asserted after the fix: nothing below may be accepted."""
+    with Store(tmp_path / "blocked.duckdb") as store:
+        seed_density(store)
+        for sql in (
+            "DROP TABLE cameras",
+            "INSERT INTO cameras VALUES ('x', 'nyc_dot', 'n', 1, 2, true, now(), now())",
+            "UPDATE cameras SET name = 'owned'",
+            "DELETE FROM density_samples",
+            "CREATE TABLE evil (a INTEGER)",
+            "COPY cameras TO '/tmp/nyc-live-integration-should-not-exist.csv'",
+        ):
+            assert "only SELECT / WITH queries are allowed" in guard_error(store, sql), sql
+        assert "only a single statement is allowed" in guard_error(
+            store, "SELECT count(*) FROM cameras; DROP TABLE cameras"
+        )
+        assert "unknown or non-queryable table(s): ['schema_meta']" in guard_error(
+            store, "SELECT * FROM schema_meta"
+        )
+        # a dotted name is not a way past the allow-list; only a `main.` prefix is stripped
+        assert "unknown or non-queryable table(s): ['pg_catalog.pg_tables']" in guard_error(
+            store, "SELECT * FROM pg_catalog.pg_tables"
+        )
+        assert guard_rows(store, "SELECT count(*) FROM main.cameras") == [[2]]
+        # and the tables that ARE on the allow-list still answer, including joined
+        assert guard_rows(
+            store,
+            "SELECT count(*) FROM density_samples d JOIN cameras c ON c.camera_id = d.camera_id",
+        ) == [[18]]
+
+
+def test_warehouse_still_allows_subqueries(tmp_path: Path) -> None:
+    """Subqueries are skipped deliberately by the FROM scan; they must keep working."""
+    with Store(tmp_path / "subquery.duckdb") as store:
+        seed_density(store)
+        assert guard_rows(store, "SELECT n FROM (SELECT 1 AS n)") == [[1]]
+        assert guard_rows(
+            store,
+            "SELECT max(n) FROM (SELECT camera_id, count(*) AS n FROM density_samples "
+            "GROUP BY camera_id)",
+        ) == [[12]]  # int-cam-a: 2 frames x 6 contract classes
 
 
 # --------------------------------------------------------------------------- env overrides

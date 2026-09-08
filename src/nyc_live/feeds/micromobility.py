@@ -75,6 +75,19 @@ class CitiBikeAdapter:
     async def fetch(self) -> Snapshot[BikeStation]:
         root_url = self._settings.citibike_gbfs_root
         await self._limiter.wait(root_url)
+        try:
+            return await self._fetch(root_url)
+        except BaseException:
+            # A failed attempt must not hold the cadence floor against the next try.
+            # This covers every failure out of _fetch: the root GET, either station
+            # GET, the vehicle_types GET, and the parse/join errors raised after a
+            # successful GET. Without it the second refresh after a failure sleeps a
+            # whole TTL inside the caller's refresh lock and blocks every reader.
+            self._limiter.forget(root_url)
+            raise
+
+    async def _fetch(self, root_url: str) -> Snapshot[BikeStation]:
+        """Do the real work. Any exception out of here releases the cadence floor."""
         started = time.perf_counter()
 
         root = await self._get_json(root_url)

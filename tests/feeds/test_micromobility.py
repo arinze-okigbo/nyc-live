@@ -13,8 +13,10 @@ Two groups:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -551,6 +553,110 @@ async def test_root_not_json_is_parse_error(
         await adapter.fetch()
 
     assert exc_info.value.kind is ErrorKind.UPSTREAM_PARSE
+
+
+# ---------------------------------------------------------------------------
+# Cadence floor: a failed fetch must not hold it against the next try
+# ---------------------------------------------------------------------------
+
+RETRY_BUDGET_S = 2.0
+"""A retry after a failed fetch must come back inside this, not after the 60 s TTL."""
+
+THROTTLE_PROBE_S = 0.25
+"""How long we let a throttled fetch block before calling it throttled (never the full TTL)."""
+
+
+def _fast_failing_adapter(settings: Settings) -> CitiBikeAdapter:
+    """Adapter with the real 60 s cadence floor but no HTTP retry backoff."""
+    return CitiBikeAdapter(
+        client=httpx.AsyncClient(), settings=settings.model_copy(update={"http_retries": 0})
+    )
+
+
+def _arm_failure(router: respx.Router, root_url: str, mode: str) -> respx.Route:
+    """Make `fetch()` fail in `mode`; return the root route so calls can be counted."""
+    if mode == "transport_error":
+        return router.get(root_url).mock(side_effect=httpx.ConnectError("connection refused"))
+    if mode == "root_5xx":
+        return router.get(root_url).mock(return_value=httpx.Response(503))
+    if mode == "root_not_json":
+        return router.get(root_url).mock(return_value=httpx.Response(200, text="<html>nope</html>"))
+    root = router.get(root_url).mock(return_value=httpx.Response(200, json=_root_v2()))
+    if mode == "child_5xx":
+        router.get(INFO_URL).mock(return_value=httpx.Response(200, json=_doc([_info_row(1)])))
+        router.get(STATUS_URL).mock(return_value=httpx.Response(503))
+    elif mode == "bad_join":
+        # disjoint station_ids on the two sides: 100 % unmatched, a parse failure
+        # raised *after* three successful GETs.
+        _mock_children(router, [_info_row(1), _info_row(2)], [_status_row(3), _status_row(4)])
+    else:  # pragma: no cover - guards the parametrisation
+        raise AssertionError(f"unknown failure mode {mode}")
+    return root
+
+
+@pytest.mark.parametrize(
+    "mode", ["transport_error", "root_5xx", "root_not_json", "child_5xx", "bad_join"]
+)
+async def test_failed_fetch_does_not_hold_the_cadence_floor(
+    settings: Settings, router: respx.Router, root_url: str, mode: str
+) -> None:
+    """Regression: the limiter was armed before the request and never released on failure,
+    so the second fetch after any failure slept a whole TTL inside the caller's refresh lock."""
+    adapter = _fast_failing_adapter(settings)
+    root = _arm_failure(router, root_url, mode)
+    assert adapter.ttl >= timedelta(seconds=60)  # the floor we must not sleep here
+
+    with pytest.raises(FeedUnavailable):
+        await adapter.fetch()
+    calls_after_first = root.call_count
+
+    started = time.perf_counter()
+    with pytest.raises(FeedUnavailable):
+        await adapter.fetch()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < RETRY_BUDGET_S, (
+        f"second fetch after a {mode} failure took {elapsed:.1f} s "
+        f"(budget {RETRY_BUDGET_S} s, ttl {adapter.ttl.total_seconds():.0f} s)"
+    )
+    assert root.call_count > calls_after_first, "second fetch never reached the network"
+
+
+async def test_successful_fetch_still_arms_the_cadence_floor(
+    adapter: CitiBikeAdapter, router: respx.Router, root_url: str
+) -> None:
+    root = router.get(root_url).mock(return_value=httpx.Response(200, json=_root_v2()))
+    _mock_children(router, [_info_row(1)], [_status_row(1)])
+
+    snap = await adapter.fetch()
+    assert len(snap.records) == 1
+
+    # The second fetch must block on the limiter; probe it instead of waiting out the TTL.
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(adapter.fetch(), THROTTLE_PROBE_S)
+    assert root.call_count == 1
+
+
+async def test_retry_after_a_failure_succeeds_promptly_and_rearms_the_floor(
+    settings: Settings, router: respx.Router, root_url: str
+) -> None:
+    adapter = _fast_failing_adapter(settings)
+    root = router.get(root_url).mock(return_value=httpx.Response(503))
+
+    with pytest.raises(FeedUnavailable):
+        await adapter.fetch()
+
+    root.mock(return_value=httpx.Response(200, json=_root_v2()))
+    _mock_children(router, [_info_row(1)], [_status_row(1)])
+    started = time.perf_counter()
+    snap = await adapter.fetch()
+    elapsed = time.perf_counter() - started
+
+    assert len(snap.records) == 1
+    assert elapsed < RETRY_BUDGET_S, f"retry after a failure took {elapsed:.1f} s"
+    # ...and the success re-arms the floor for the next caller.
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(adapter.fetch(), THROTTLE_PROBE_S)
 
 
 # ---------------------------------------------------------------------------

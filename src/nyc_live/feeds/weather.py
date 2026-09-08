@@ -275,6 +275,18 @@ class WeatherAdapter:
 
     async def fetch(self) -> Snapshot[WeatherReport]:
         await self._limiter.wait(self.name.value)
+        try:
+            return await self._fetch_once()
+        except BaseException:
+            # A failed attempt must not hold the cadence floor against the next try:
+            # otherwise the second refresh after any failure sleeps the whole 300 s TTL
+            # inside the caller's refresh lock. This covers every exit from _fetch_once,
+            # including the all-stations-failed path (which raises after three GETs) and
+            # cancellation.
+            self._limiter.forget(self.name.value)
+            raise
+
+    async def _fetch_once(self) -> Snapshot[WeatherReport]:
         started = time.perf_counter()
         fetched_at = now_utc()
         results = await asyncio.gather(

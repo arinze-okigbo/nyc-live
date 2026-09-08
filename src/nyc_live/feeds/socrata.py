@@ -224,6 +224,18 @@ class _SocrataAdapter[RecordT: BaseModel]:
 
     async def fetch(self) -> Snapshot[RecordT]:
         await self._limiter.wait(self.name.value)
+        try:
+            return await self._fetch_once()
+        except BaseException:
+            # A failed attempt must not hold the cadence floor against the next try:
+            # otherwise the second refresh after any failure sleeps a whole TTL
+            # (300 s for 311, 6 h for inspections) inside the caller's refresh lock.
+            # This covers every exit from _fetch_once, not just the GET: a mid-paging
+            # failure, a non-array body, an empty window, and cancellation.
+            self._limiter.forget(self.name.value)
+            raise
+
+    async def _fetch_once(self) -> Snapshot[RecordT]:
         started = time.perf_counter()
         fetched_at = now_utc()
         rows = await soda_fetch_all(

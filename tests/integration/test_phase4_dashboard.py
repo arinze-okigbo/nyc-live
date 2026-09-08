@@ -162,16 +162,18 @@ def test_stream_pushes_every_default_feed_then_health(client: TestClient) -> Non
     assert names[1:-1] == list(DEFAULT_STREAM_KEYS)
     payloads = dict(events)
     assert json.loads(payloads["ready"])["feeds"] == list(DEFAULT_STREAM_KEYS)
+    # every SSE event is also a GET endpoint carrying the identical envelope: that is the
+    # documented polling fallback static/app.js switches to when EventSource errors.
     for key in DEFAULT_STREAM_KEYS:
         envelope = json.loads(payloads[key])
         check_envelope(envelope, feed=ROUTE_BY_KEY[key].feed)
-    # the SSE event and the polling fallback must carry the identical envelope. Only the
-    # feeds that can be fetched twice in one process are re-polled here: see the xfail in
-    # test_phase1_feeds.py::test_down_feed_blocks_the_caller_for_a_whole_ttl for why a
-    # second GET of /api/citibike, /api/nyc_311 or /api/weather stalls for a whole TTL.
-    for key in ("density", "dot_cameras"):
-        assert set(json.loads(payloads[key])) == set(client.get(f"/api/{key}").json()), (
+        polled = client.get(f"/api/{key}").json()
+        assert set(envelope) == set(polled), (
             f"the {key} SSE event and GET /api/{key} disagree on the envelope keys"
+        )
+        assert envelope["status"] == polled["status"], (
+            f"the {key} SSE event says {envelope['status']} but GET /api/{key} says "
+            f"{polled['status']}"
         )
     health = json.loads(payloads["health"])
     assert set(health) == set(client.get("/api/health").json())

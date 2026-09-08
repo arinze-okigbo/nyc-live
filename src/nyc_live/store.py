@@ -36,6 +36,23 @@ _FORBIDDEN_SQL = re.compile(
     re.IGNORECASE,
 )
 
+_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+_SQL_STRING = re.compile(r"'(?:[^']|'')*'")
+_STRING_SENTINEL = "\x00str\x00"
+"""Structural checks run against a copy with comments stripped and string literals
+replaced by this sentinel. Without it a keyword or a semicolon inside a quoted value
+reads as syntax, and a quoted file path after FROM never reaches the table allow-list."""
+
+_CTE_NAME = re.compile(
+    r"(?:\bwith\b|,)\s+(?:recursive\s+)?([a-zA-Z_]\w*)\s*(?:\([^)]*\))?\s+as\s*\(",
+    re.IGNORECASE,
+)
+_FROM_TARGET = re.compile(r"\b(?:from|join)\s+(\S+)", re.IGNORECASE)
+
+
+def _mask_literals(sql: str) -> str:
+    return _SQL_STRING.sub(_STRING_SENTINEL, _SQL_COMMENT.sub(" ", sql))
+
 
 class Store:
     def __init__(self, path: Path | str = ":memory:", *, read_only: bool = False) -> None:
@@ -146,19 +163,34 @@ class Store:
     # -- warehouse (read-only SQL for the query_warehouse tool) ------------
 
     def query_readonly(self, sql: str, *, max_rows: int = 500) -> WarehouseResult:
-        """SELECT-only. Rejects DML/DDL keywords and multi-statement input up front."""
+        """SELECT-only over `WAREHOUSE_READ_ONLY_TABLES`, plus any CTE the query defines.
+
+        Every structural check runs against `_mask_literals(sql)`, so content inside a
+        quoted value is data rather than syntax. A quoted path or table function after
+        FROM is rejected outright: DuckDB's replacement scan would otherwise read it
+        off disk, and a bare-identifier allow-list never sees it.
+        """
         cleaned = sql.strip().rstrip(";").strip()
-        if ";" in cleaned:
+        masked = _mask_literals(cleaned)
+        if ";" in masked:
             raise ValueError("only a single statement is allowed")
-        if not re.match(r"^(select|with)\b", cleaned, re.IGNORECASE):
+        if not re.match(r"^(select|with)\b", masked, re.IGNORECASE):
             raise ValueError("only SELECT / WITH queries are allowed")
-        if _FORBIDDEN_SQL.search(cleaned):
+        if _FORBIDDEN_SQL.search(masked):
             raise ValueError("query contains a forbidden keyword; the warehouse is read-only")
-        referenced = {
-            m.lower()
-            for m in re.findall(r"\b(?:from|join)\s+([a-zA-Z_][\w.]*)", cleaned, re.IGNORECASE)
-        }
-        unknown = {t for t in referenced if t not in WAREHOUSE_READ_ONLY_TABLES and "." not in t}
+        defined = {m.lower() for m in _CTE_NAME.findall(masked)}
+        unknown: set[str] = set()
+        for raw in _FROM_TARGET.findall(masked):
+            if raw.startswith("("):  # subquery
+                continue
+            if _STRING_SENTINEL in raw or "(" in raw:
+                raise ValueError(
+                    "only plain table names may follow FROM / JOIN; reading a file path or "
+                    "table function is not allowed"
+                )
+            name = raw.rstrip(",)").strip('"').lower().removeprefix("main.")
+            if name and name not in defined and name not in WAREHOUSE_READ_ONLY_TABLES:
+                unknown.add(name)
         if unknown:
             raise ValueError(f"unknown or non-queryable table(s): {sorted(unknown)}")
         started = time.perf_counter()
