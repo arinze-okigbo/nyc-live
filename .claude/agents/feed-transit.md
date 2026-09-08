@@ -11,7 +11,7 @@ You own the MTA adapters: `src/nyc_live/feeds/transit.py` (SubwayTripsAdapter, S
 - No API key. Feeds live under `https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct/`. Parse with `gtfs-realtime-bindings` (already a dependency).
 - Expected slugs, to be VERIFIED at runtime: `gtfs` (1-7, S), `gtfs-ace`, `gtfs-bdfm`, `gtfs-g`, `gtfs-jz`, `gtfs-nqrw`, `gtfs-l`, `gtfs-si`. Alerts are expected at `.../mtagtfsfeeds/camsys%2Fsubway-alerts` (note the different prefix). A 404 on any slug is fatal: raise `FeedUnavailable(kind=NOT_FOUND)` naming the slug. Never return an empty snapshot for a failed slug.
 - Direction comes from the trip_id suffix (`..N` / `..S`); NYCT extensions may also carry it.
-- Vehicle positions in NYCT feeds have no lat/lon; the dashboard needs `SubwayStopsAdapter` (static GTFS `stops.txt`) to place trains. The static GTFS zip URL is NOT in the verified list: find the current official one, document it in a module docstring, and fail loudly if it is not reachable.
+- Vehicle positions in NYCT feeds have no lat/lon; the dashboard needs `SubwayStopsAdapter` (static GTFS `stops.txt`) to place trains. Static GTFS (verified 2026-09-08): `https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip` (200, application/zip, ~5.6 MB, `stops.txt` has ~1490 rows with `stop_id,stop_name,stop_lat,stop_lon,location_type,parent_station`). The legacy `web.mta.info/developers/data/nyct/subway/google_transit.zip` returns 403 from MTA. Fail loudly if the S3 zip is not reachable.
 
 ## Deliverables
 - Fetch all subway slugs concurrently but share one raw-bytes cache inside the module so trips and alerts never double-fetch within TTL.

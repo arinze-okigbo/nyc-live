@@ -34,6 +34,15 @@ class Settings(BaseSettings):
         default="https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds",
         alias="NYC_LIVE_MTA_GTFS_BASE",
     )
+    mta_static_gtfs_url: str = Field(
+        default="https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip",
+        alias="NYC_LIVE_MTA_STATIC_GTFS_URL",
+        description=(
+            "Static GTFS zip for subway stops. Overridable like every other upstream so "
+            "mta_subway_stops can be redirected or killed by env; the legacy web.mta.info "
+            "URL now returns 403 from MTA."
+        ),
+    )
     citibike_gbfs_root: str = Field(
         default="https://gbfs.citibikenyc.com/gbfs/gbfs.json", alias="NYC_LIVE_CITIBIKE_GBFS_ROOT"
     )
@@ -41,6 +50,15 @@ class Settings(BaseSettings):
         default="https://data.cityofnewyork.us", alias="NYC_LIVE_SOCRATA_BASE"
     )
     weather_base: str = Field(default="https://api.weather.gov", alias="NYC_LIVE_WEATHER_BASE")
+    mta_bus_time_base: str = Field(
+        default="https://bustime.mta.info/api/siri",
+        alias="NYC_LIVE_MTA_BUS_TIME_BASE",
+        description=(
+            "MTA Bus Time SIRI base. The bus feed is a deferred, key-gated stub, but its "
+            "URL is configurable like every other upstream so it cannot repeat the "
+            "import-time binding that made mta_subway_stops unredirectable."
+        ),
+    )
 
     live_tests: bool = Field(default=False, alias="NYC_LIVE_TESTS")
 
