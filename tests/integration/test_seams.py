@@ -8,20 +8,30 @@ it does not own.
 
 from __future__ import annotations
 
+import http.server
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 from fastmcp import Client
 
 from nyc_dash.api import health_payload
 from nyc_live.config import Settings
 from nyc_live.contracts import FeedName
-from nyc_live.feeds.transit import STATIC_GTFS_URL
+from nyc_live.feeds.transit import (
+    STATIC_GTFS_URL,
+    SubwayAlertsAdapter,
+    SubwayShapesAdapter,
+    reset_raw_cache,
+)
 from nyc_live.services import Services, density_now, open_services, warehouse
 from nyc_live.store import Store
 from nyc_mcp.server import create_server
 from nyc_vision.report import cameras_covered
-from tests.integration.conftest import CAM_A, parse_iso, seed_density
+from tests.integration.conftest import CAM_A, REPO_ROOT, parse_iso, seed_density
 
 # --------------------------------------------------------------------------- feed_health
 
@@ -263,3 +273,115 @@ async def test_the_stops_feed_defaults_to_the_mta_s3_zip(
         adapter = svc.registry[FeedName.MTA_SUBWAY_STOPS].adapter
         assert adapter.source_url == STATIC_GTFS_URL  # type: ignore[attr-defined]
     assert STATIC_GTFS_URL == "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip"
+
+
+# --------------------------------------------------------------------------- route_id vocabulary
+
+
+TRANSIT_FIXTURES = REPO_ROOT / "tests" / "fixtures" / "transit"
+
+
+@contextmanager
+def _serve_transit_fixtures(
+    *, alerts_path: str, alerts_body: bytes, gtfs_path: str, gtfs_body: bytes
+) -> Iterator[str]:
+    """Real `ThreadingHTTPServer` on an ephemeral loopback port serving both real,
+    already-recorded transit fixtures. Yields the base URL.
+
+    Not a mock of the adapters' HTTP calls: a real socket, a real response, the real
+    `SubwayAlertsAdapter`/`SubwayShapesAdapter` making a real request and doing their
+    real parsing. Only the transport (a loopback port instead of api-endpoint.mta.info)
+    differs from the live path -- and it must be a real socket rather than
+    `offline_upstreams`, since that fixture's dead-proxy env would swallow this
+    loopback request too.
+    """
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        _routes = {
+            alerts_path: (alerts_body, "application/x-protobuf"),
+            gtfs_path: (gtfs_body, "application/zip"),
+        }
+
+        def do_GET(self) -> None:
+            entry = self._routes.get(self.path)
+            if entry is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            body, content_type = entry
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return  # silence stdlib's per-request stderr logging
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+async def test_alerts_and_shapes_agree_on_the_route_id_vocabulary() -> None:
+    """The dash "alerts highlight route shapes" feature (map-layers.js: clicking an
+    alert's route chip sets `highlightedRoute`, which `subwayShapesLayer` compares with
+    `===` against `SubwayRouteShape.route_id`) only works if `SubwayAlert.routes` and
+    `SubwayRouteShape.route_id` are drawn from the same string vocabulary. Both adapters
+    are exercised for real against the real recorded fixtures feed-transit already
+    checked in (`tests/fixtures/transit/subway-alerts.pb`,
+    `gtfs_subway_trimmed.zip`) -- no synthetic body, no respx, nothing invented -- so a
+    real naming mismatch (case, an "SIR" vs "SI" style divergence, an agency prefix like
+    the bus feed's `LineRef`) would show up here exactly as it would in the browser.
+    """
+    alerts_body = (TRANSIT_FIXTURES / "subway-alerts.pb").read_bytes()
+    gtfs_body = (TRANSIT_FIXTURES / "gtfs_subway_trimmed.zip").read_bytes()
+    reset_raw_cache()
+    try:
+        with _serve_transit_fixtures(
+            alerts_path="/camsys%2Fsubway-alerts",
+            alerts_body=alerts_body,
+            gtfs_path="/gtfs_subway.zip",
+            gtfs_body=gtfs_body,
+        ) as base:
+            settings = Settings(
+                _env_file=None,  # type: ignore[call-arg]
+                NYC_LIVE_MTA_GTFS_BASE=base,
+                NYC_LIVE_MTA_STATIC_GTFS_URL=f"{base}/gtfs_subway.zip",
+                NYC_LIVE_HTTP_RETRIES=0,
+            )
+            async with httpx.AsyncClient(trust_env=False, timeout=10.0) as client:
+                alerts_snap = await SubwayAlertsAdapter(client=client, settings=settings).fetch()
+                shapes_snap = await SubwayShapesAdapter(client=client, settings=settings).fetch()
+    finally:
+        reset_raw_cache()
+
+    alert_routes = {route for alert in alerts_snap.records for route in alert.routes}
+    shape_routes = {shape.route_id for shape in shapes_snap.records}
+    assert alert_routes, "the recorded alerts fixture has no route-bearing alerts to compare"
+    assert shape_routes, "the recorded shapes fixture produced no routes"
+
+    shared = alert_routes & shape_routes
+    assert shared, (
+        f"alerts routes {sorted(alert_routes)} and shapes routes {sorted(shape_routes)} share "
+        "no route_id at all -- map-layers.js's highlightedRoute === route_id comparison would "
+        "never match anything a user could click"
+    )
+    # the real recorded fixtures were pulled independently (different day, different
+    # endpoints) and still agree on at least these: proof the two feeds are not just
+    # coincidentally disjoint-but-compatible in shape.
+    assert {"2", "3", "A", "L", "SI"} <= shared, sorted(shared)
+
+    # every route_id in both feeds must be the bare NYCT code (e.g. "6", "SI", "GS"),
+    # never something agency-qualified like the bus feed's LineRef ("MTA NYCT_B54") --
+    # the `===` in map-layers.js needs the literal string, not a substring or prefix.
+    for route_id in alert_routes | shape_routes:
+        assert route_id and " " not in route_id and "_" not in route_id, (
+            f"route_id {route_id!r} does not look like a bare NYCT route code"
+        )

@@ -35,11 +35,14 @@ from nyc_dash.app import create_app
 from nyc_live.config import Settings
 from nyc_live.contracts import (
     BikeStation,
+    BusVehicle,
     Camera,
     CameraDensity,
+    ErrorKind,
     FeedName,
     ServiceRequest,
     SubwayArrival,
+    SubwayRouteShape,
     WeatherObservation,
     WeatherReport,
 )
@@ -108,6 +111,24 @@ def test_health_endpoint_reports_every_feed(client: TestClient) -> None:
     assert feeds[FeedName.NY511_CAMERAS.value]["configured"] is False
     for entry in body["feeds"]:
         assert entry["status"] in {"fresh", "stale", "error", "never_fetched"}
+
+
+def test_key_gated_endpoints_degrade_to_not_configured(client: TestClient) -> None:
+    """`/api/mta_bus` and `/api/ny511_cameras` through the REAL registry, not the fake
+    adapters `tests/dash/test_degradation.py` uses for the same assertion. Both feeds'
+    adapters are real (`BusPositionsAdapter`, `Ny511CamerasAdapter`); with no key set
+    (`conftest.integration_settings` sets none) the honest degradation the "never
+    fabricate data" rule requires is `status="error"`, `kind="not_configured"`, all the
+    way out to the HTTP layer a real map layer's `fetch()` actually receives.
+    """
+    for key, feed in (("mta_bus", FeedName.MTA_BUS), ("ny511_cameras", FeedName.NY511_CAMERAS)):
+        payload = client.get(f"/api/{key}").json()
+        status = check_envelope(payload, feed=feed)
+        assert status == "error", f"/api/{key} was {status}, expected error (not_configured)"
+        assert payload["error"]["kind"] == ErrorKind.NOT_CONFIGURED.value, payload["error"]
+    health = {f["feed"]: f for f in client.get("/api/health").json()["feeds"]}
+    assert health[FeedName.MTA_BUS.value]["configured"] is False
+    assert health[FeedName.NY511_CAMERAS.value]["configured"] is False
 
 
 def test_density_endpoint_serves_the_seeded_store_rows(client: TestClient) -> None:
@@ -341,6 +362,38 @@ def test_frontend_expectations_match_the_served_contracts(client: TestClient) ->
         assert response.status_code == 200, f"/api/{key}?{query} -> {response.text[:200]}"
 
 
+NON_DEFAULT_LAYER_FIELDS: dict[str, tuple[type, tuple[str, ...]]] = {
+    "mta_bus": (BusVehicle, ("lat", "lon", "route_id")),
+    "mta_subway_shapes": (SubwayRouteShape, ("points", "route_id")),
+}
+"""Real map layers added after `FRONTEND_FIELDS`/`DEFAULT_STREAM_KEYS` were written
+(`busLayer`/`subwayShapesLayer` in map-layers.js): deliberately NOT part of the default
+SSE push (`mta_bus` is opt-in/`defaultVisible: false`, `mta_subway_shapes` is a 24h-TTL
+background decoration fetched once, not a toggleable FEEDS entry -- see data-sync.js's
+`feedUrl`), so they must not be folded into `FRONTEND_FIELDS`'s
+`stream_keys == set(DEFAULT_STREAM_KEYS)` invariant. Checked here instead so a route
+that ships a new map layer without a matching contract field cannot go untested the
+way `FRONTEND_FIELDS` going stale for these two almost did.
+"""
+
+
+def test_new_map_layers_field_names_match_the_served_contracts(client: TestClient) -> None:
+    """`busLayer`/`subwayShapesLayer` (map-layers.js) read these fields directly; the exact
+    queries `data-sync.js`'s `feedUrl()` sends for each must also be accepted."""
+    for key, (model, fields) in NON_DEFAULT_LAYER_FIELDS.items():
+        assert key in ROUTE_BY_KEY, f"static/app.js requests /api/{key}, which is not a route"
+        missing = [f for f in fields if f not in model.model_fields]
+        assert not missing, f"app.js reads {missing} off {model.__name__}, which has no such field"
+    for key, query in (
+        ("mta_bus", "limit=3000"),  # FEEDS[].query in map-layers.js
+        ("mta_subway_shapes", None),  # feedUrl()'s SUBWAY_SHAPES_KEY branch: no query at all
+    ):
+        url = f"/api/{key}" if query is None else f"/api/{key}?{query}"
+        response = client.get(url)
+        assert response.status_code == 200, f"{url} -> {response.text[:200]}"
+        check_envelope(response.json(), feed=ROUTE_BY_KEY[key].feed)
+
+
 def test_static_assets_are_served_and_name_the_blocked_cdns(client: TestClient) -> None:
     """The page itself is served by our own server; only the CDN tags need the network."""
     page = client.get("/")
@@ -358,3 +411,33 @@ def test_offline_env_really_is_offline(offline_upstreams: int) -> None:
     assert env["NO_PROXY"] == ""
     with httpx.Client(timeout=2.0) as http, pytest.raises(httpx.HTTPError):
         http.get("https://webcams.nyctmc.org/api/cameras/")
+
+
+# --------------------------------------------------------------------------- socrata lag (live)
+
+
+@pytest.mark.live
+async def test_nyc_311_endpoint_survives_socrata_publish_lag_live(
+    integration_settings: Settings,
+) -> None:
+    """Regression, end to end through the dashboard: `Nyc311Adapter` used to build its
+    `$where` from a fixed 24h `created_date` cutoff, so `/api/nyc_311` reported
+    `status="error"` whenever erm2-nwe9's daily-batch publish lagged past 24h (confirmed
+    live, 37.6h lag, 2026-09-09) -- see `NYC_311_STALENESS_CEILING` in `socrata.py`. The
+    fix (recency-only query, no calendar `$where`) is covered adapter-side by
+    `tests/feeds/test_civic_311.py`'s `test_311_lagging_but_within_ceiling_still_succeeds`
+    with a synthetic body; nothing exercises the real dashboard endpoint against the real,
+    possibly-still-lagging upstream, which is the boundary this regression actually broke.
+    No recorded fixture exists for an offline replay of this (`tests/fixtures/civic/`
+    holds only `RECORD.md`: data.cityofnewyork.us is blocked from this sandbox), so this
+    is a live test rather than a replay; recording that fixture is feed-civic's job.
+    """
+    services = build_services(integration_settings, open_store=False, strict=True)
+    try:
+        with TestClient(create_app(services)) as client:
+            payload = client.get("/api/nyc_311").json()
+    finally:
+        await services.aclose()
+    status = check_envelope(payload, feed=FeedName.NYC_311)
+    assert status == "fresh", f"/api/nyc_311 was {status}: {payload['error']}"
+    assert payload["records"], "/api/nyc_311 was fresh with zero records"
