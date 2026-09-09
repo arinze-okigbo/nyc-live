@@ -3,6 +3,10 @@
  * child of #panel, above the existing "Layers" heading (see layers-panel.css, which
  * owns #panel itself). Reads color tokens from tokens.css, same as every other
  * stylesheet on this page.
+ *
+ * Follows the 11/12/13px type scale and the four-state (rest/hover/focus-visible/active)
+ * control rule documented at the top of layers-panel.css -- this section is a sibling of
+ * the layer list, in the same 300px column, and must not drift from it.
  */
 
 .alerts-details {
@@ -11,12 +15,16 @@
   border-bottom: 1px solid var(--line);
 }
 
+/* Same overline as #panel h2 / #legend-details summary (layers-panel.css): all three are
+   the same rank in this column, so they share one size, case and tracking. This one was
+   a step larger than the <h2>s it sits between before this pass. */
 .alerts-details summary {
   display: flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
@@ -26,40 +34,96 @@
 .alerts-details summary::-webkit-details-marker { display: none; }
 
 .alerts-details summary:hover { color: var(--text); }
+.alerts-details summary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 
 /* Icon comes from icon("alert") in icons.js; recolored via currentColor like every
    other icon on the page (see .icon in tokens.css). */
 .alerts-details summary .icon { color: inherit; }
 
+/* Disclosure caret, matching #legend-details summary::after in layers-panel.css -- the
+   native marker is suppressed above, so without this nothing indicated the section
+   collapses. Sits after the count badge, at the far right of the row. */
+.alerts-details summary::after {
+  content: "\25BE";
+  flex: 0 0 auto;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.alerts-details[open] summary::after { transform: rotate(180deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .alerts-details summary::after { transition: none; }
+}
+
+/* Deliberately the same box as .pill (layers-panel.css): both are a feed's status
+   readout, so they share size, radius, padding and the fresh/stale/error coloring.
+   `margin-left: auto` pushes it away from the heading; the caret above follows it. */
 .alerts-count {
   margin-left: auto;
   border-radius: 999px;
   border: 1px solid var(--line);
-  padding: 1px 8px;
+  padding: 2px 8px;
   font-size: 11px;
+  font-weight: 400;
   text-transform: none;
   letter-spacing: normal;
   color: var(--muted);
+  /* Deliberately allowed to wrap inside its own pill rather than `nowrap`: the stale
+     variant is long ("195 active (stale, last good 3:37:11 PM)") and this section has no
+     tooltip to hide the rest in, so a taller pill is the honest failure mode and an
+     ellipsis or an overflowing row is not. */
+  min-width: 0;
 }
 
 .alerts-count[data-status="fresh"] { color: var(--fresh); border-color: var(--fresh); }
 .alerts-count[data-status="stale"] { color: var(--stale); border-color: var(--stale); }
-.alerts-count[data-status="error"] { color: var(--error); border-color: var(--error); }
-
-.alerts-empty {
-  margin: 8px 0 0;
-  color: var(--muted);
-  font-size: 12px;
+.alerts-count[data-status="error"] {
+  color: var(--error);
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  font-weight: 600;
 }
 
-.alerts-empty[data-status="error"] { color: var(--error); }
+/* "No active alerts." and "Service alerts unavailable: ..." both used to be bare
+   paragraphs, while the identical concepts in the detail panel got a bordered,
+   icon-led box (.detail-empty-state). Same idea, two treatments, one screen apart.
+   This is now that same muted box, so an empty/failed state looks the same wherever
+   it appears. */
+.alerts-empty {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--muted) 8%, transparent);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 
+/* An unreachable alerts feed is not a quiet "nothing here" -- it is the one message in
+   this section a rider must not skim past, so it gets the solid error border and tint
+   rather than the muted dashed box, matching .detail[data-status="error"] in
+   layers-panel.css. */
+.alerts-empty[data-status="error"] {
+  color: color-mix(in srgb, var(--error) 55%, var(--text));
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border: 1px solid var(--error);
+}
+
+/* `overscroll-behavior: contain` stops a scroll that reaches the end of this list from
+   chaining into #panel and carrying the whole sidebar with it -- with 194 active alerts
+   (observed live) that happened on nearly every flick. The thin styled scrollbar is the
+   only cue that the list is scrollable at all; the default overlay bar on macOS fades
+   out and left the clipped 10th alert looking like the last one. */
 .alerts-list {
   list-style: none;
   margin: 8px 0 0;
   padding: 0;
   max-height: 260px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
 }
 
 .alert-item {
@@ -69,16 +133,32 @@
   margin-bottom: 6px;
   font-size: 12px;
   line-height: 1.4;
+  transition: border-color 0.15s ease;
 }
 
+/* The item contains focusable route chips, so it needs the same row-level feedback the
+   layer rows get (#layers li:hover / :focus-within, layers-panel.css) -- otherwise a
+   keyboard user tabbing through 194 alerts' worth of chips has no idea which alert they
+   are inside of. */
+.alert-item:hover,
+.alert-item:focus-within { border-color: var(--muted); }
+
 .alert-item:last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .alert-item { transition: none; }
+}
 
 /* Honest overflow notice (alerts-banner.js's truncationNoticeHtml): appended after the
    real alerts only when the upstream total exceeds ALERTS_ENDPOINT's fetch limit.
    Muted and non-interactive (no chips, no click target) so it reads as a system note,
-   not another alert. */
+   not another alert -- which means it must also drop the bordered card every real alert
+   wears, because keeping that was the single loudest thing making it look like one. */
 .alert-item--more {
+  border: 0;
+  padding: 8px 0 2px;
   color: var(--muted);
+  font-size: 11px;
   font-style: italic;
   text-align: center;
 }
@@ -86,30 +166,47 @@
 .alert-routes {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 4px;
+  gap: 5px;
+  margin-bottom: 5px;
 }
 
 /* Background is set inline per-route from map-layers.js's ROUTE_COLORS (alerts-banner.js
-   computes a readable text color to go with it), so this rule only supplies shape. */
+   computes a readable text color to go with it), so this rule only supplies shape.
+   `min-width` + centering makes every bullet the same box whether its label is one
+   character ("2") or two ("SI", "FS"), which is what lets a wrapped row of them scan as
+   a set of route bullets instead of ragged text fragments. This is also the element a
+   rider actually scans the list by -- "which line is affected" -- so it is sized as
+   such rather than as the smallest text in the row, which is what it was. */
 .route-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
   border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 1.5;
+  line-height: 1;
 }
 
 /* Only chips for a real route_id (data-route present -- see alerts-banner.js's
    routeChipHtml, which leaves the "?" fallback plain) are a click target for the
    map highlight, so only those get pointer affordance and a focus ring. */
-.route-chip[data-route] { cursor: pointer; }
+.route-chip[data-route] { cursor: pointer; transition: filter 0.15s ease; }
 .route-chip[data-route]:hover { filter: brightness(1.15); }
+.route-chip[data-route]:active { filter: brightness(0.9); }
 .route-chip[data-route]:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
 
+@media (prefers-reduced-motion: reduce) {
+  .route-chip[data-route] { transition: none; }
+}
+
 /* The currently highlighted route (state.js's highlightedRoute) -- its shapes are at
-   full opacity on the map, so the chip that drove that gets a matching ring here. */
+   full opacity on the map, so the chip that drove that gets a matching ring here. The
+   ring is drawn outside the chip's box, which is why .alert-routes' gap is 5px rather
+   than the 4px it was: at 4px an active chip's ring touched its neighbour. */
 .route-chip--active { box-shadow: 0 0 0 2px var(--text); }
 
 .alert-header { color: var(--text); overflow-wrap: anywhere; }
@@ -124,7 +221,24 @@
    just makes the open state itself less space-hungry, and grows the <summary>'s own
    tap target since it's the collapse/expand control. */
 @media (max-width: 480px) {
-  .alerts-details summary { padding: 6px 0; min-height: 20px; }
+  /* Was `padding: 6px 0; min-height: 20px`, which rendered ~29px -- the comment above
+     has always claimed a grown tap target, but the number never matched the 44px
+     baseline the rest of this breakpoint uses (.layer-head in layers-panel.css, the
+     map controls in chrome.css). It does now. */
+  .alerts-details summary { padding: 6px 0; min-height: 44px; }
   .alerts-list { max-height: 160px; }
   .alert-item { padding: 6px 8px; margin-bottom: 5px; }
+
+  /* Route chips are the only real click target in this section and were ~14x17px on
+     touch -- far under the baseline, in the same panel where the borough chips were
+     explicitly grown for it. 28px is as large as a route bullet can go before it stops
+     reading as an inline bullet and starts reading as a button; the surrounding
+     .alert-routes gap grows with it so neighbouring targets stay distinguishable. */
+  .alert-routes { gap: 8px; margin-bottom: 6px; }
+  .route-chip {
+    min-width: 28px;
+    height: 28px;
+    font-size: 13px;
+    border-radius: 5px;
+  }
 }

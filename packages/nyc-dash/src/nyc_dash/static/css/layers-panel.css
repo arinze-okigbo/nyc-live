@@ -1,6 +1,27 @@
 /*
  * The sidebar: layer list (checkbox + pill + detail line) and legend. Paired with
  * status-panel.js, which owns this DOM. Reads color tokens from tokens.css.
+ *
+ * TYPE SCALE (shared with alerts-banner.css and detail-panel.css, which style the other
+ * two dense components on this page). Before this pass the sidebar alone used 11, 11.5,
+ * 12 and the inherited 14px in what is one 300px-wide column of secondary text -- four
+ * sizes inside a 3px range, which reads as drift rather than hierarchy. Three steps now,
+ * and nothing else:
+ *   11px  micro    -- section headings/overlines, status pills, timestamps, meta lines
+ *   12px  secondary-- hints, the per-layer detail line, legend entries, chips
+ *   13px  primary  -- the thing a row is actually about (a layer's name, a panel title)
+ * 15px (#topbar h1, chrome.css) stays the only larger size on the page.
+ *
+ * INTERACTIVE STATES: every control across these three files now has, at minimum, rest +
+ * :hover + :focus-visible, and the ring is always `outline: 2px solid var(--text)` (the
+ * one .borough-chip established; offset 1px on a chip whose own shape is the target,
+ * 2px where the ring would otherwise crowd adjacent text). Controls that also read as
+ * buttons -- the borough chips, the route chips, the panel's close button -- add
+ * :active. This was previously applied unevenly: the borough and route chips had a ring,
+ * while both <details> summaries, the layer checkboxes and the detail panel's close
+ * button had none and fell back to the browser's default blue ring, which is the one
+ * off-palette color that ever appeared on this page. detail-panel.js focuses that close
+ * button on every single open, so it was on screen constantly.
  */
 
 #panel {
@@ -11,13 +32,19 @@
   border-left: 1px solid var(--line);
 }
 
-#panel h2 {
-  font-size: 12px;
+/* Section headings and the two <details> summaries that act as headings (Service
+   Alerts, Legend) share one overline treatment -- they are the same rank in the
+   document, so they must not drift apart in size, case or tracking. */
+#panel h2,
+#legend-details summary {
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-  margin: 16px 0 8px;
 }
+
+#panel h2 { margin: 16px 0 8px; }
 
 #panel h2:first-child { margin-top: 0; }
 
@@ -30,13 +57,46 @@
   border-radius: 8px;
   padding: 8px 10px;
   margin-bottom: 8px;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
-#layers li:hover { border-color: var(--muted); }
+#layers li:hover {
+  border-color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 6%, transparent);
+}
+
+/* Tabbing to a row's checkbox previously gave no row-level feedback at all, so a
+   keyboard user could not tell which of seven near-identical rows they were on --
+   only the checkbox itself changed, and only via the browser's default ring. */
+#layers li:focus-within {
+  border-color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 8%, transparent);
+}
 
 .layer-head { display: flex; align-items: center; gap: 8px; line-height: 1.3; }
-.layer-head label { flex: 1 1 auto; cursor: pointer; }
+
+/* The layer's own name is the primary text of the row, but at the inherited 14px it was
+   the second-largest text on the entire page (behind only the 15px <h1>) -- a routine
+   label outranking the section headings above it. 13px + a weight bump keeps it clearly
+   dominant within its row without competing with the page title. */
+.layer-head label {
+  flex: 1 1 auto;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+#layers input[type="checkbox"] {
+  flex: 0 0 auto;
+  cursor: pointer;
+  accent-color: var(--text);
+}
+
+#layers input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 
 /* Per-feed pictogram (see js/icons.js), recolored to match that layer's map marker
    color -- see the LAYER_ICON comment in status-panel.js for why each was picked.
@@ -52,10 +112,17 @@
 .icon.layer-marker-dohmh_inspections { color: #2ecc71; }
 .icon.layer-marker-mta_bus { color: #f4d35e; }
 
+/* `min-width` + centered text so the pill occupies the same box for "loading…",
+   "fresh", "stale" and "error". Without it the pill's left edge jumped several pixels
+   every time a feed's status changed, dragging the row's layout with it -- exactly the
+   moment the eye is meant to be reading the new status, not tracking a moving box. */
 .pill {
+  display: inline-block;
+  min-width: 52px;
+  text-align: center;
   border-radius: 999px;
   border: 1px solid var(--line);
-  padding: 1px 8px;
+  padding: 2px 8px;
   font-size: 11px;
   color: var(--muted);
   transition: color 0.4s ease, border-color 0.4s ease;
@@ -64,6 +131,14 @@
 .pill[data-status="fresh"] { color: var(--fresh); border-color: var(--fresh); }
 .pill[data-status="stale"] { color: var(--stale); border-color: var(--stale); }
 .pill[data-status="error"] { color: var(--error); border-color: var(--error); }
+
+/* An "error" pill is the one status worth interrupting a scan for, so it also gets a
+   faint fill -- outline-only, it carried exactly as much visual weight as the "fresh"
+   pill sitting directly above it and differed by hue alone. */
+.pill[data-status="error"] {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  font-weight: 600;
+}
 
 /* Brief "just updated" pulse when a pill's status category actually flips (see
    flashPill() in status-panel.js) -- not on every poll tick that merely refreshes
@@ -104,6 +179,7 @@
 
 .borough-chip:hover { color: var(--text); border-color: var(--muted); }
 .borough-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+.borough-chip:active { transform: translateY(1px); }
 
 /* The currently selected borough (state.js's selectedBorough) -- same "filled pill"
    treatment used nowhere else on this page yet, so it reads unambiguously as "this one
@@ -114,31 +190,63 @@
   border-color: var(--text);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .borough-chip { transition: none; }
+  .borough-chip:active { transform: none; }
+}
+
 @media (max-width: 480px) {
   .borough-chip { padding: 6px 12px; font-size: 12.5px; }
 }
 
-.detail { color: var(--muted); font-size: 11.5px; line-height: 1.4; margin-top: 5px; word-break: break-word; }
+.detail { color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 5px; word-break: break-word; }
+
+/* A feed's error message is the highest-value line this panel ever prints, and it used
+   to be styled as the quietest: muted-adjacent pink at the smallest size in the column.
+   It now sits in a tinted, error-bordered strip -- the same "this is a state, not
+   prose" treatment .detail-empty-state (detail-panel.css) and .alerts-empty
+   (alerts-banner.css) use, so a failure looks the same wherever it surfaces.
+   Colors are mixed from --error/--text rather than the hand-picked #ffb3c4 that was
+   here before, so they still track tokens.css if the palette is ever retuned. */
 .detail[data-status="error"] {
-  color: #ffb3c4;
-  text-decoration: underline dotted rgba(255, 179, 196, 0.5);
-  text-underline-offset: 2px;
+  color: color-mix(in srgb, var(--error) 55%, var(--text));
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-left: 2px solid var(--error);
+  border-radius: 0 4px 4px 0;
+  padding: 5px 7px;
+  margin-top: 7px;
   cursor: help;
 }
 
-/* status-panel.js wraps the legend heading + list in this <details> at runtime so
-   it can be collapsed once someone's learned it, without any extra JS state. */
+/* Both <details> headings on this sidebar (Legend here, Service Alerts in
+   alerts-banner.css) suppress the native disclosure marker, which left them with no
+   affordance at all -- nothing but a hover color said they could be collapsed. One
+   shared caret, rotated by [open], restores that without touching status-panel.js. */
 #legend-details { margin: 16px 0 8px; }
 #legend-details summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
   margin-bottom: 8px;
+  list-style: none;
 }
+#legend-details summary::-webkit-details-marker { display: none; }
 #legend-details summary:hover { color: var(--text); }
-#legend-details[open] summary { margin-bottom: 8px; }
+#legend-details summary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+#legend-details summary::after {
+  content: "\25BE";
+  margin-left: auto;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+#legend-details[open] summary::after { transform: rotate(180deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  #legend-details summary::after { transition: none; }
+}
+
 #legend-details .legend { margin-top: 4px; }
 
 .legend li { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 5px; line-height: 1.35; }
@@ -180,5 +288,10 @@
     height: 18px;
   }
 
-  .pill { padding: 3px 10px; font-size: 12px; }
+  .pill { padding: 3px 10px; font-size: 12px; min-width: 58px; }
+
+  /* Same 44px baseline as .layer-head above and the map controls in chrome.css: the
+     Legend summary is a real collapse/expand control and was the one such control on
+     this sidebar still sized to its text. */
+  #legend-details summary { min-height: 44px; margin-bottom: 4px; }
 }

@@ -17,8 +17,10 @@
  * was built exactly once, at click time, and never touched again even though the
  * underlying feed kept refreshing every REFRESH_S.
  *
- * Depends on: utils.js (el, escapeHtml, hhmmss), state.js (state), map-layers.js
- * (busRouteLabel).
+ * Depends on: utils.js (el, escapeHtml, hhmmss), icons.js (icon), map-layers.js
+ * (busRouteLabel). Nothing here reads state.js any more: every panel renders from the
+ * record it was handed (and the fresh one refreshOpenDetailPanel finds by identity),
+ * never by re-scanning a whole feed's records.
  */
 
 // Kept in sync with the CSS transition-duration on .detail-panel below (detail-panel.css).
@@ -96,10 +98,12 @@ const RECORD_GONE_MESSAGES = {
   nyc_311: "This 311 request is no longer in the live feed.",
 };
 
-// dohmh_inspections is the one feed above whose identity field (camis) is not 1:1 with a
-// record: NYC publishes one row per violation per inspection visit, so several rows can
-// share a camis. Every other feed's identity field is already unique, so this only ever
-// has real work to do for that one case.
+// Every identity field above is now 1:1 with a record, including dohmh_inspections'
+// camis: NYC publishes one row per violation per visit, but the adapter collapses that
+// to one record per restaurant (contracts.py RestaurantInspection). The tie-break below
+// is kept as cheap insurance -- it is the only thing standing between a duplicate
+// identity (a feed regression, a stale cached envelope) and an arbitrary pick, and it
+// costs nothing on the single-candidate path every feed actually takes today.
 function findMatchingRecord(idFn, records, currentRecord) {
   const targetId = idFn(currentRecord);
   if (targetId == null) return null;
@@ -156,7 +160,7 @@ function refreshOpenDetailPanel(feedKey, envelope) {
   if (!body) return;
   // Full rebuild path (used by builders with no async subsections to protect): preserve
   // scroll position across the innerHTML replacement so a mid-scroll reader (e.g. the
-  // inspection-history list) doesn't get yanked back to the top every poll cycle.
+  // inspection violation list) doesn't get yanked back to the top every poll cycle.
   const scrollTop = body.scrollTop;
   if (panelCleanup) {
     panelCleanup();
@@ -550,70 +554,100 @@ function cameraDetail(camera) {
   );
 }
 
-const INSPECTION_HISTORY_LIMIT = 8;
-const INSPECTION_VIOLATION_TRUNCATE_LENGTH = 90;
-
-// NYC publishes one row per violation per inspection, so the same `camis` (restaurant
-// id) commonly recurs across the already-fetched dohmh_inspections records -- once for
-// each violation on each visit. This pulls every OTHER row for the clicked restaurant
-// out of that already-loaded set (no new fetch: the data is already in `state`),
-// excluding the clicked record itself by identity, newest inspection_date first.
-function otherInspectionsForCamis(record) {
-  const entry = state.get("dohmh_inspections");
-  const records = (entry && entry.envelope && entry.envelope.records) || [];
-  return records
-    .filter((r) => r !== record && r.camis === record.camis)
-    .sort((a, b) => {
-      const aTime = a.inspection_date ? Date.parse(a.inspection_date) : 0;
-      const bTime = b.inspection_date ? Date.parse(b.inspection_date) : 0;
-      return bTime - aTime;
-    });
-}
-
-function truncate(text, maxLength) {
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-// hhmmss() (utils.js) renders time-of-day only, which is right for "Inspected" up top
-// (a single recent timestamp) but useless for telling apart history rows that are
-// often months or years apart. This renders the calendar date instead.
-function inspectionHistoryDate(iso) {
+// hhmmss() (utils.js) renders time-of-day only, which is useless for an inspection: the
+// feed's visits are days to weeks old, so the calendar date is the only part that
+// carries information. Kept as its own helper for the "Inspected" field.
+function inspectionDateLabel(iso) {
   if (!iso) return "unknown date";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
 }
 
-// Same visual treatment as the subway stop list (.detail-stop-list), so this reads as
-// one consistent "detail list" pattern across layers rather than a bespoke table.
-function inspectionHistoryHtml(others) {
-  if (!others.length) {
-    return emptyStateHtml(icon("chart"), "No other inspections on file.");
-  }
-  const shown = others.slice(0, INSPECTION_HISTORY_LIMIT);
-  const rows = shown
-    .map((r) => {
-      const when = inspectionHistoryDate(r.inspection_date);
-      const grade = escapeHtml(r.grade || "ungraded");
-      const score = r.score != null ? r.score : "—";
-      const violation = escapeHtml(
-        truncate(r.violation_description || "no violation recorded", INSPECTION_VIOLATION_TRUNCATE_LENGTH)
-      );
-      return `<li>
-        <div class="inspection-history-row-head">
-          <span>${when}</span>
-          <span>grade ${grade} · score ${score}</span>
-        </div>
-        <p class="inspection-history-violation">${violation}</p>
-      </li>`;
-    })
-    .join("");
-  const omitted = others.length - shown.length;
-  const note =
-    omitted > 0
-      ? `<p class="detail-subhead detail-subhead-note">+${omitted} more not shown</p>`
-      : "";
-  return `<ul class="detail-stop-list inspection-history-list">${rows}</ul>${note}`;
+// The only critical_flag value that changes how a row should read. Measured against the
+// live feed (500 records / 1,708 violations): "Critical" 948, "Not Critical" 747,
+// "Not Applicable" 13. It is upstream free text, so anything else is passed through
+// verbatim rather than being bucketed into a guess.
+const CRITICAL_FLAG = "critical";
+
+function isCriticalViolation(violation) {
+  return String(violation.critical_flag || "").trim().toLowerCase() === CRITICAL_FLAG;
+}
+
+// "5 violations, 2 critical" -- the critical count is the part a reader actually acts
+// on, so it goes in the heading rather than being left for them to tally off the list.
+function violationCountLabel(violations) {
+  const total = violations.length;
+  const critical = violations.filter(isCriticalViolation).length;
+  const noun = total === 1 ? "violation" : "violations";
+  return critical ? `${total} ${noun}, ${critical} critical` : `${total} ${noun}`;
+}
+
+// Same list shell as the subway stop list (.detail-stop-list), so this reads as one
+// consistent "detail list" pattern across layers. Server-side order is preserved as-is:
+// the adapter already emits the graded inspection's violations first, then Critical
+// before non-critical, then code ascending -- re-sorting here could only diverge from it.
+function violationRowHtml(violation) {
+  const critical = isCriticalViolation(violation);
+  const code = violation.code ? `Code ${escapeHtml(violation.code)}` : "Uncoded";
+  const flag = violation.critical_flag
+    ? escapeHtml(violation.critical_flag)
+    : "severity not stated";
+  const marker = critical ? '<span aria-hidden="true">⚠️</span> ' : "";
+  const description = escapeHtml(
+    violation.description || "DOHMH published no description for this violation."
+  );
+  return `<li class="inspection-violation-row" data-critical="${critical}">
+    <div class="inspection-history-row-head">
+      <span>${code}</span>
+      <span class="inspection-violation-flag">${marker}${flag}</span>
+    </div>
+    <p class="inspection-history-violation">${description}</p>
+  </li>`;
+}
+
+// The claim this section is allowed to make. `violations` is every violation cited on
+// the single visit shown above it -- NOT the restaurant's inspection history. Earlier
+// visits are genuinely absent from this feed (the adapter collapses each restaurant to
+// its most recent visit), so the section says so rather than letting one visit read as
+// a complete record.
+const INSPECTION_SCOPE_NOTE =
+  "This feed carries each restaurant's most recent inspection only, not its earlier visits.";
+
+function inspectionViolationsHtml(record) {
+  // Defensive: an envelope cached before `violations` existed, or a partial record from
+  // a degraded feed, must render the honest empty state rather than throw.
+  const violations = Array.isArray(record.violations) ? record.violations : [];
+  const count = violations.length ? ` (${violationCountLabel(violations)})` : "";
+  // The warning glyph belongs to a visit that actually cited something; pairing it with
+  // the clean-visit state below would put a ⚠️ directly above "no violations were cited".
+  const headingIcon = violations.length ? icon("alert") : icon("dohmh_inspections");
+  const heading = `<p class="detail-subhead">${headingIcon} Violations cited on this inspection${count}</p>`;
+  const note = `<p class="detail-subhead detail-subhead-note">${escapeHtml(INSPECTION_SCOPE_NOTE)}</p>`;
+  // An empty list is a real result -- a visit where DOHMH cited nothing -- not missing
+  // data, so it gets an affirmative message. Deliberately left at emptyStateHtml's
+  // default (not opted into its live-region flag): this is static content rendered at
+  // open time and re-rendered unchanged on every poll, so announcing it would be
+  // repetitive noise. See emptyStateHtml's own note on the one caller that opts in.
+  const listOrEmpty = violations.length
+    ? `<ul class="detail-stop-list inspection-history-list inspection-violation-list">${violations
+        .map(violationRowHtml)
+        .join("")}</ul>`
+    : emptyStateHtml("✅", "No violations were cited on this inspection.");
+  return heading + listOrEmpty + note;
+}
+
+const VIOLATION_LIST_SELECTOR = ".inspection-violation-list";
+
+// refreshOpenDetailPanel preserves the panel *body*'s scroll across a full rebuild, but
+// this builder's body never scrolls: the violation list is the scroll container
+// (.detail-stop-list caps it at 220px, and the feed's largest visit -- 14 violations --
+// overflows that by ~1,280px, measured live). So the rebuild has to carry the list's own
+// scroll position, or a reader partway down it gets yanked to the top on every poll.
+// `body` still holds the previous render when the builder is re-invoked, which is what
+// makes reading the outgoing value here possible.
+function violationListScrollTop(body) {
+  const list = body.querySelector(VIOLATION_LIST_SELECTOR);
+  return list ? list.scrollTop : 0;
 }
 
 // This is a plain full-body rebuild on refresh (no async subsection to protect, see
@@ -623,17 +657,20 @@ function inspectionDetail(record) {
   openDetailPanel(
     escapeHtml(record.dba || "Unnamed restaurant"),
     (body, r) => {
-      const others = otherInspectionsForCamis(r);
+      const listScrollTop = violationListScrollTop(body);
       body.innerHTML =
         fieldsHtml([
           ["Cuisine", escapeHtml(r.cuisine || "—")],
           ["Grade", escapeHtml(r.grade || "ungraded")],
           ["Score", r.score != null ? r.score : "—"],
-          ["Inspected", r.inspection_date ? inspectionHistoryDate(r.inspection_date) : "—"],
-          ["Latest violation", escapeHtml(r.violation_description || "none recorded")],
-        ]) +
-        `<p class="detail-subhead">${icon("chart")} Inspection history</p>
-         ${inspectionHistoryHtml(others)}`;
+          ["Inspected", r.inspection_date ? inspectionDateLabel(r.inspection_date) : "—"],
+          // DOHMH's `action`: the visit's outcome, and the only place "Establishment
+          // Closed by DOHMH" surfaces at all. Took the slot of the old single-violation
+          // row, which is now just violations[0] repeated verbatim by the section below.
+          ["Result", escapeHtml(r.action || "—")],
+        ]) + inspectionViolationsHtml(r);
+      const list = body.querySelector(VIOLATION_LIST_SELECTOR);
+      if (list) list.scrollTop = listScrollTop;
     },
     "dohmh_inspections",
     { feedKey: "dohmh_inspections", record }

@@ -691,3 +691,395 @@ def test_refresh_preserves_scroll_position_on_the_full_rebuild_path() -> None:
     detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
     assert "const scrollTop = body.scrollTop;" in detail_js
     assert "body.scrollTop = scrollTop;" in detail_js
+
+
+def test_global_shortcuts_never_fire_while_the_user_is_typing() -> None:
+    """The single most common way a keyboard layer breaks a page: a single-character
+    shortcut firing mid-word in a text field. Every character shortcut must be gated on
+    a typing check that covers <input>/<textarea>/<select> and contenteditable, tested
+    against both the event target and the live activeElement, and any Ctrl/Cmd/Alt
+    combination (which belongs to the browser) must be handed straight back. Shift must
+    NOT be in that bail-out list -- `?` is Shift+/ on most layouts."""
+    app_js = (STATIC_DIR / "js" / "app.js").read_text()
+    assert "function isTypingTarget(node)" in app_js
+    assert 'return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";' in app_js
+    assert "if (node.isContentEditable) return true;" in app_js
+    assert "return isTypingTarget(ev.target) || isTypingTarget(document.activeElement);" in app_js
+    assert "function hasCommandModifier(ev)" in app_js
+    assert "return ev.ctrlKey || ev.metaKey || ev.altKey;" in app_js
+    assert "ev.shiftKey" not in app_js.split("function hasCommandModifier(ev)")[1].split("}")[0]
+    # order matters: the modifier and typing gates run before any key is dispatched.
+    dispatch = app_js[app_js.index("function handleGlobalKeydown(ev) {") :]
+    dispatch = dispatch[: dispatch.index("\n}\n")]
+    assert dispatch.index("if (hasCommandModifier(ev)) return;") < dispatch.index(
+        "const action = SHORTCUT_ACTIONS[key];"
+    )
+    assert dispatch.index("if (isTypingContext(ev)) return;") < dispatch.index(
+        "const layerIndex = digitLayerIndex(key);"
+    )
+    # a keystroke another handler already acted on (search.js's Arrow/Enter, the focus
+    # traps) is never acted on twice, and IME composition is left alone.
+    assert "if (ev.defaultPrevented) return;" in dispatch
+    assert "if (ev.isComposing || ev.keyCode === 229) return;" in dispatch
+
+
+def test_global_shortcut_map_covers_search_layers_recenter_and_borough() -> None:
+    """The shortcut table itself: `/` focuses search, `?` toggles help, `r` recenters,
+    `b` cycles the borough filter, and digits address the sidebar's layers. Layer
+    toggling must go through the existing checkbox (buildPanel's change listener in
+    status-panel.js stays the single write site for `visible`), and recentering must
+    reuse state.js's NYC constant rather than another file's control DOM."""
+    app_js = (STATIC_DIR / "js" / "app.js").read_text()
+    assert "const SHORTCUT_ACTIONS = {" in app_js
+    for entry in (
+        '"/": focusSearchInput,',
+        '"?": toggleShortcuts,',
+        "r: recenterMap,",
+        "b: cycleBoroughFilter,",
+    ):
+        assert entry in app_js, entry
+    # layers: digits 1..9 map onto FEEDS order; the toggle drives the real checkbox.
+    assert "function toggleLayerByIndex(index)" in app_js
+    assert "const checkbox = el(`toggle-${feed.key}`);" in app_js
+    assert "checkbox.click();" in app_js
+    assert "function digitLayerIndex(key)" in app_js
+    # recenter uses the same target as map-layers.js's own recenter control.
+    assert "map.flyTo({ center: [NYC.longitude, NYC.latitude], zoom: NYC.zoom });" in app_js
+    # borough cycle walks state.js's canonical list, "all" first, and wraps.
+    assert 'const BOROUGH_CYCLE = ["all", ...BOROUGHS];' in app_js
+    assert "BOROUGH_CYCLE[(current + 1) % BOROUGH_CYCLE.length]" in app_js
+    assert "setSelectedBorough(next);" in app_js
+    # actions whose only other feedback is visual are announced politely.
+    assert 'id="shortcut-status"' in INDEX
+    assert 'role="status"' in INDEX and 'aria-live="polite"' in INDEX
+    assert "function announceShortcut(message)" in app_js
+
+
+def test_shortcut_help_overlay_is_discoverable_dismissible_and_focus_trapped() -> None:
+    """`?` is only useful if something points at it, and a modal that strands focus is
+    worse than no modal: the overlay needs an always-visible affordance in the page
+    chrome, dialog semantics, Escape AND click-outside dismissal, a Tab trap, and focus
+    restored to whatever opened it -- the same contract detail-panel.js already meets."""
+    app_js = (STATIC_DIR / "js" / "app.js").read_text()
+    # discoverable: a real button in the topbar, wired to the same toggle the key uses.
+    assert 'id="shortcuts-button"' in INDEX
+    assert 'aria-haspopup="dialog"' in INDEX
+    assert 'aria-controls="shortcuts-overlay"' in INDEX
+    assert 'button.addEventListener("click", () => toggleShortcuts());' in app_js
+    # dialog semantics on static markup, body filled from FEEDS at open time so the
+    # per-layer rows can never drift from the layers that actually exist.
+    assert 'id="shortcuts-overlay"' in INDEX
+    assert 'role="dialog"' in INDEX
+    assert 'aria-modal="true"' in INDEX
+    assert 'aria-labelledby="shortcuts-title"' in INDEX
+    assert "function renderShortcutsBody()" in app_js
+    assert "FEEDS.slice(0, SHORTCUT_LAYER_DIGIT_MAX).map((feed, index)" in app_js
+    # dismissal: Escape (topmost layer only), the close button, and a backdrop click.
+    assert "function handleEscapeKey(ev)" in app_js
+    assert "if (isShortcutsOpen()) {" in app_js
+    assert "if (ev.target === overlay) closeShortcuts();" in app_js
+    assert 'id="shortcuts-close"' in INDEX
+    # focus: trapped while open, restored to the trigger on close, never forced onto a
+    # detached node.
+    assert "function trapShortcutsFocus(ev)" in app_js
+    assert 'if (ev.key !== "Tab") return;' in app_js
+    assert "let shortcutsTrigger = null;" in app_js
+    assert "shortcutsTrigger = document.activeElement;" in app_js
+    assert "trigger.focus({ preventScroll: true });" in app_js
+    assert "trigger.isConnected" in app_js
+    # the overlay documents the shortcuts that already existed elsewhere but were
+    # invisible (detail-panel.js's Escape/Tab trap, search.js's arrows/Enter).
+    assert "const SHORTCUT_ROWS = [" in app_js
+    for key in ('keys: ["Esc"]', 'keys: ["↑", "↓"]', 'keys: ["Enter"]', 'keys: ["Tab"]'):
+        assert key in app_js, key
+    # [hidden] must beat the overlay's own display:flex or it would never hide.
+    assert ".shortcuts-overlay[hidden] { display: none; }" in INDEX
+
+
+def test_inspection_panel_shows_this_visits_violations_not_a_fabricated_history() -> None:
+    """The dohmh_inspections feed now emits one record per restaurant, so the panel's old
+    "Inspection history" section (which re-scanned state for other rows sharing the same
+    camis) could only ever produce an empty list. It is replaced by RestaurantInspection's
+    `violations` -- every violation cited on the ONE visit shown -- and the section must
+    say exactly that, never re-claiming to be inspection history."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    # the dead code, and the helpers only it used, are gone rather than left unreachable.
+    for dead in (
+        "otherInspectionsForCamis",
+        "function truncate(",
+        "INSPECTION_HISTORY_LIMIT",
+        "INSPECTION_VIOLATION_TRUNCATE_LENGTH",
+        "inspectionHistoryHtml",
+    ):
+        assert dead not in detail_js, dead
+    # ...including its only reason to read a whole feed out of state.js.
+    assert 'state.get("dohmh_inspections")' not in detail_js
+    # the replacement renders from the record's own violations list.
+    assert "function inspectionViolationsHtml(record)" in detail_js
+    assert "Array.isArray(record.violations) ? record.violations : []" in detail_js
+    assert "inspectionViolationsHtml(r)" in detail_js
+    # honest framing: this visit's violations, and an explicit note that earlier visits
+    # are not in the feed -- neither the heading nor the note may promise history.
+    assert "Violations cited on this inspection" in detail_js
+    assert "Inspection history" not in detail_js
+    assert "most recent inspection only, not its earlier visits" in detail_js
+    # upstream order is preserved (adapter emits graded-first, Critical-first, code asc).
+    assert ".map(violationRowHtml)" in detail_js
+
+
+def test_inspection_clean_visit_reads_as_a_result_not_as_missing_data() -> None:
+    """`violations: []` is a real outcome -- 25 of 500 live records are a visit where
+    DOHMH cited nothing -- so it gets an affirmative empty state, not the generic
+    "nothing to show" treatment. It must NOT opt into emptyStateHtml's `{ live: true }`
+    ARIA path: that is reserved for the one-time record-gone transition, and this string
+    is static content re-rendered unchanged on every poll."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert 'emptyStateHtml("\u2705", "No violations were cited on this inspection.")' in detail_js
+    violations_fn = detail_js[detail_js.index("function inspectionViolationsHtml(record) {") :]
+    violations_fn = violations_fn[: violations_fn.index("\n}\n")]
+    assert "{ live: true }" not in violations_fn
+    # showRecordGoneState remains the sole opt-in (guarded by the existing count == 1).
+    assert detail_js.count("{ live: true }") == 1
+
+
+def test_inspection_violation_rows_surface_criticality_and_escape_upstream_text() -> None:
+    """A critical violation is not the same as a routine one, so the row and the heading
+    both carry it. critical_flag is upstream free text ("Critical" / "Not Critical" /
+    "Not Applicable" in the live feed), so only the exact critical value is special-cased
+    and everything else is shown verbatim -- escaped, like every other upstream string."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "function isCriticalViolation(violation)" in detail_js
+    assert 'const CRITICAL_FLAG = "critical";' in detail_js
+    assert (
+        'String(violation.critical_flag || "").trim().toLowerCase() === CRITICAL_FLAG' in detail_js
+    )
+    # heading counts the critical subset instead of leaving the reader to tally it.
+    assert "function violationCountLabel(violations)" in detail_js
+    assert "violations.filter(isCriticalViolation).length" in detail_js
+    assert "${total} ${noun}, ${critical} critical" in detail_js
+    # every upstream-controlled string in a row goes through escapeHtml.
+    row_fn = detail_js[detail_js.index("function violationRowHtml(violation) {") :]
+    row_fn = row_fn[: row_fn.index("\n}\n")]
+    assert "escapeHtml(violation.code)" in row_fn
+    assert "escapeHtml(violation.critical_flag)" in row_fn
+    assert "escapeHtml(" in row_fn and "violation.description" in row_fn
+    assert "${violation.description}" not in row_fn and "${violation.code}" not in row_fn
+    # DOHMH's `action` (the only place "Establishment Closed by DOHMH" surfaces) replaces
+    # the old "Latest violation" field, which now just repeats violations[0] verbatim.
+    assert '["Result", escapeHtml(r.action || "\u2014")]' in detail_js
+    assert "Latest violation" not in detail_js
+
+
+def test_inspection_violation_list_keeps_its_own_scroll_across_a_refresh() -> None:
+    """The violation list -- not the panel body -- is the scroll container for this
+    builder (.detail-stop-list caps at 220px; the feed's largest visit overflows it by
+    ~1,280px), so refreshOpenDetailPanel's body-level scroll preservation cannot help
+    here. The builder must carry the list's own scrollTop across its innerHTML
+    replacement, or every poll yanks a mid-list reader back to the top."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert 'const VIOLATION_LIST_SELECTOR = ".inspection-violation-list";' in detail_js
+    assert "function violationListScrollTop(body)" in detail_js
+    builder = detail_js[detail_js.index("function inspectionDetail(record) {") :]
+    builder = builder[: builder.index("\n}\n")]
+    # read before the wipe, restore after it.
+    assert builder.index("const listScrollTop = violationListScrollTop(body);") < builder.index(
+        "body.innerHTML ="
+    )
+    assert "if (list) list.scrollTop = listScrollTop;" in builder
+    # the CSS class the selector depends on is actually emitted by the list markup.
+    assert "inspection-violation-list" in detail_js
+
+
+# -- Component-quality invariants for the three dense components ---------------
+#
+# layers-panel.css (sidebar), detail-panel.css (click-detail card) and
+# alerts-banner.css (service alerts) style what is visually one family of dense,
+# 300px-wide information components. These lock in the rules that pass established,
+# because each one was violated by drift that accumulated feature-by-feature.
+
+CSS_DIR = STATIC_DIR / "css"
+LAYERS_CSS = (CSS_DIR / "layers-panel.css").read_text()
+DETAIL_CSS = (CSS_DIR / "detail-panel.css").read_text()
+ALERTS_CSS = (CSS_DIR / "alerts-banner.css").read_text()
+COMPONENT_CSS = "\n".join((LAYERS_CSS, DETAIL_CSS, ALERTS_CSS))
+# These stylesheets carry long rationale comments that quote the values they replaced
+# (a `min-height: 20px`, a hand-picked hex), so any "this value is gone" assertion has
+# to look at declarations only.
+DECLARATIONS_ONLY = re.sub(r"/\*.*?\*/", "", COMPONENT_CSS, flags=re.DOTALL)
+
+
+def _media_block(css: str, query: str) -> str:
+    """Every `@media <query> { ... }` block's body, brace-matched and concatenated --
+    layers-panel.css has two separate `max-width: 480px` blocks."""
+    bodies = []
+    cursor = 0
+    while True:
+        start = css.find(query, cursor)
+        if start == -1:
+            break
+        open_brace = css.index("{", start)
+        depth = 0
+        for i in range(open_brace, len(css)):
+            if css[i] == "{":
+                depth += 1
+            elif css[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.append(css[open_brace + 1 : i])
+                    cursor = i
+                    break
+        else:
+            raise AssertionError(f"unterminated {query}")
+    assert bodies, f"no {query} block"
+    return "\n".join(bodies)
+
+
+def test_sidebar_section_headings_share_one_overline_size() -> None:
+    """The <h2>s, the Legend <summary> and the Service Alerts <summary> are the same
+    rank in the same column. Service Alerts used to render a step larger (12px) than the
+    <h2>s it sits between, which read as drift, not hierarchy."""
+    assert "#panel h2,\n#legend-details summary {" in LAYERS_CSS
+    heading_rule = LAYERS_CSS[LAYERS_CSS.index("#panel h2,\n#legend-details summary {") :]
+    heading_rule = heading_rule[: heading_rule.index("}")]
+    assert "font-size: 11px;" in heading_rule
+    alerts_summary = ALERTS_CSS[ALERTS_CSS.index(".alerts-details summary {") :]
+    alerts_summary = alerts_summary[: alerts_summary.index("}")]
+    assert "font-size: 11px;" in alerts_summary
+
+
+def test_every_interactive_control_has_the_same_focus_ring() -> None:
+    """Focus styling used to be present on the borough/route chips and absent on the
+    detail panel's close button, both <details> summaries and the layer checkboxes --
+    which meant those four fell back to Chrome's default blue ring, the one off-palette
+    colour on the page. detail-panel.js focuses the close button on every open, so that
+    ring was visible constantly."""
+    controls = (
+        ".borough-chip",
+        '#layers input[type="checkbox"]',
+        "#legend-details summary",
+        ".alerts-details summary",
+        ".route-chip[data-route]",
+        ".detail-panel-close",
+    )
+    for selector in controls:
+        rule = f"{selector}:focus-visible"
+        assert rule in COMPONENT_CSS, selector
+        declaration = COMPONENT_CSS[COMPONENT_CSS.index(rule) :]
+        declaration = declaration[: declaration.index("}")]
+        assert "outline: 2px solid var(--text);" in declaration, selector
+
+
+def test_loading_skeleton_matches_the_row_it_stands_in_for() -> None:
+    """The stop-list skeleton was `padding: 5px 0` around a 10px chip where the real row
+    is `padding: 3px 0` around a ~17px line box, so the list jumped when the data landed.
+    The min-height is derived from the real row's own metrics so they cannot drift."""
+    real_row = DETAIL_CSS[DETAIL_CSS.index(".detail-stop-list li {") :]
+    real_row = real_row[: real_row.index("}")]
+    skeleton_row = DETAIL_CSS[DETAIL_CSS.index(".skeleton-row {") :]
+    skeleton_row = skeleton_row[: skeleton_row.index("}")]
+    assert "padding: 3px 0;" in real_row
+    assert "padding: 3px 0;" in skeleton_row
+    assert "min-height: calc(1.45em + 6px);" in skeleton_row
+
+
+def test_density_history_has_a_visible_loading_state() -> None:
+    """The camera panel's density section used to have a screen-reader-only loading
+    state and no visual one at all -- zero height, so the panel reflowed when
+    /api/camera_density_history answered, while the subway panel one click away got a
+    skeleton. Driven off the aria-busy detail-panel.js already sets; no markup change."""
+    assert '#camera-density-history[aria-busy="true"]' in DETAIL_CSS
+    rule = DETAIL_CSS[DETAIL_CSS.index('#camera-density-history[aria-busy="true"] {') :]
+    rule = rule[: rule.index("}")]
+    assert "animation: detail-shimmer" in rule
+    assert "min-height:" in rule
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert 'id="camera-density-history" class="detail-loading" aria-busy="true"' in detail_js
+    reduced = _media_block(
+        DETAIL_CSS, "@media (prefers-reduced-motion: reduce) {\n  .skeleton-chip,"
+    )
+    assert "animation: none" in reduced
+
+
+def test_empty_state_icon_slot_is_size_normalised() -> None:
+    """emptyStateHtml() is called with both emoji ("⚠️", "📷", "🚇", "✅") and 14px
+    icon() SVGs. Unnormalised, the same "could not load" error looked urgent in the
+    subway panel (large colour emoji) and incidental in the camera panel (small grey
+    stroke triangle)."""
+    slot = DETAIL_CSS[DETAIL_CSS.index(".detail-empty-icon {") :]
+    slot = slot[: slot.index("}")]
+    assert "width: 16px;" in slot
+    svg = DETAIL_CSS[DETAIL_CSS.index(".detail-empty-icon .icon {") :]
+    svg = svg[: svg.index("}")]
+    assert "width: 16px;" in svg and "height: 16px;" in svg
+    assert "color: inherit;" in svg
+
+
+def test_camera_frame_reserves_its_space_without_cropping() -> None:
+    """nyctmc.org serves 352x240. Reserving the box stops the density section below from
+    being shoved down when the JPEG decodes; `contain` (not `cover`) means a camera that
+    ever serves another size is letterboxed rather than silently cropped -- no pixel of
+    a live feed may be hidden to make a box fit."""
+    rule = DETAIL_CSS[DETAIL_CSS.index(".camera-live img {") :]
+    rule = rule[: rule.index("}")]
+    assert "aspect-ratio: 22 / 15;" in rule
+    assert "object-fit: contain;" in rule
+
+
+def test_phone_width_touch_targets_meet_the_44px_baseline() -> None:
+    """An earlier accessibility pass set 44px for the layer rows and the map controls.
+    Three controls were missed: the Service Alerts summary (its comment claimed a grown
+    tap target while setting `min-height: 20px`), the Legend summary, and the alert route
+    chips -- which are real click targets (they drive the map highlight) at ~14x17px."""
+    alerts_mobile = _media_block(ALERTS_CSS, "@media (max-width: 480px)")
+    assert "min-height: 44px;" in alerts_mobile
+    assert "min-height: 20px" not in DECLARATIONS_ONLY
+    assert "min-width: 28px;" in alerts_mobile and "height: 28px;" in alerts_mobile
+
+    layers_mobile = _media_block(LAYERS_CSS, "@media (max-width: 480px)")
+    assert ".layer-head { min-height: 44px" in layers_mobile  # preserved from that pass
+    assert "#legend-details summary { min-height: 44px;" in layers_mobile
+
+    detail_mobile = _media_block(DETAIL_CSS, "@media (max-width: 480px)")
+    # Grown via a transparent ::after (24px button + 10px on each side = 44px) rather
+    # than by resizing the button, whose head is `align-items: flex-start` around titles
+    # that wrap to two and three lines.
+    assert ".detail-panel-close::after" in detail_mobile
+    assert "inset: -10px;" in detail_mobile
+
+
+def test_component_css_derives_its_tints_from_tokens_not_hand_picked_hex() -> None:
+    """tokens.css's own header says every other stylesheet references its custom
+    properties and never a raw hex. These three had a hand-lightened error pink and
+    three hardcoded rgba() restatements of --muted/--fresh that would not track a
+    palette change. The documented per-layer marker colours stay: they deliberately
+    mirror map-layers.js's colourblind-validated palette, not the token set."""
+    assert "#ffb3c4" not in DECLARATIONS_ONLY
+    assert "rgba(141, 153, 174" not in DECLARATIONS_ONLY
+    assert "rgba(46, 204, 113" not in DECLARATIONS_ONLY
+    assert COMPONENT_CSS.count("color-mix(in srgb, var(--") >= 10
+    # the intentional exception, still present and still commented
+    assert ".icon.layer-marker-subway_arrivals { color: #f4d35e; }" in LAYERS_CSS
+
+
+def test_critical_violations_are_never_signalled_by_colour_alone() -> None:
+    """violationRowHtml (detail-panel.js) emits `data-critical` plus an inline ⚠️ and the
+    flag word. The CSS adds a left rule and a tint on top of those; it must not become
+    the only channel."""
+    assert '.inspection-violation-row[data-critical="true"]' in DETAIL_CSS
+    rule = DETAIL_CSS[DETAIL_CSS.index('.inspection-violation-row[data-critical="true"] {') :]
+    rule = rule[: rule.index("}")]
+    assert "border-left-color: var(--error);" in rule
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert '<span aria-hidden="true">⚠️</span>' in detail_js
+    assert "inspection-violation-flag" in detail_js
+
+
+def test_long_running_lists_do_not_scroll_chain_into_the_page() -> None:
+    """The alerts list (194 active, observed live) and the stop/violation list are inner
+    scroll containers. Without this, a flick that reached their end carried the sidebar
+    -- or the map -- with it."""
+    for block in (".alerts-list {", ".detail-stop-list {", ".detail-panel {"):
+        css = ALERTS_CSS if "alerts" in block else DETAIL_CSS
+        rule = css[css.index(block) :]
+        rule = rule[: rule.index("}")]
+        assert "overscroll-behavior: contain;" in rule, block
