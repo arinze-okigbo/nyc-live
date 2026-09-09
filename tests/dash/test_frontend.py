@@ -170,6 +170,57 @@ def test_legend_covers_bus_and_subway_shapes_layers() -> None:
     assert "subway route" in legend_html
 
 
+def test_borough_filter_control_exists_in_the_sidebar() -> None:
+    """A segmented row of borough chips (5 boroughs + All) must be present in #panel's
+    markup, and every borough named in state.js's BOROUGHS must have a corresponding
+    chip in index.html."""
+    filter_match = re.search(
+        r'<div id="borough-filter" class="borough-filter"[^>]*>(.*?)</div>', INDEX, flags=re.DOTALL
+    )
+    assert filter_match, "could not find #borough-filter in index.html"
+    chips_html = filter_match.group(1)
+    assert 'data-borough="all"' in chips_html
+    boroughs_match = re.search(r"const BOROUGHS = \[(.*?)\];", APP_JS)
+    assert boroughs_match, "could not find the BOROUGHS list in state.js"
+    boroughs = re.findall(r'"([^"]+)"', boroughs_match.group(1))
+    assert boroughs == ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"]
+    for borough in boroughs:
+        assert f'data-borough="{borough}"' in chips_html
+
+
+def test_borough_filter_narrows_exactly_the_three_layers_with_a_borough_field() -> None:
+    """cameraLayer (Camera.area), layer311 (ServiceRequest.borough), and
+    inspectionsLayer (RestaurantInspection.boro) must filter their data through the
+    shared selectedBorough global; every other layer builder must not reference it."""
+    assert "let selectedBorough = " in APP_JS
+    assert 'boroughFiltered(located(envelope.records), "area")' in APP_JS
+    assert 'boroughFiltered(located(envelope.records), "borough")' in APP_JS
+    assert 'boroughFiltered(located(envelope.records), "boro")' in APP_JS
+    # comparisons must be case-insensitive: the three feeds don't agree on borough case
+    assert "value.toUpperCase() === selectedBorough.toUpperCase()" in APP_JS
+
+
+def test_borough_filter_click_updates_state_and_rerenders_without_new_fetches() -> None:
+    """Clicking a chip must update selectedBorough, refresh the affected sidebar pills
+    from already-fetched envelopes (no new fetch), and call renderLayers() -- the same
+    shared-global-plus-explicit-rerender pattern highlightedRoute/selectRoute already
+    established for the route-highlight feature."""
+    assert "function setSelectedBorough(borough)" in APP_JS
+    assert "selectedBorough = borough;" in APP_JS
+    assert 'typeof setPill === "function") setPill(key, entry.envelope);' in APP_JS
+    assert "renderLayers();" in APP_JS
+    assert "function initBoroughFilter()" in APP_JS
+
+
+def test_borough_filtered_sidebar_counts_reflect_the_active_filter() -> None:
+    """The three affected FEEDS entries' count() must route through boroughCountLabel
+    so the sidebar number matches what's actually drawn once a borough is selected,
+    instead of staying a stale citywide total."""
+    assert 'boroughCountLabel(env.records, "area", "cameras")' in APP_JS
+    assert 'boroughCountLabel(env.records, "borough", "requests")' in APP_JS
+    assert 'boroughCountLabel(env.records, "boro", "inspections")' in APP_JS
+
+
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:
     assert client.get("/index.html").headers["content-type"].startswith("text/html")
     assert (

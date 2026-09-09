@@ -65,6 +65,34 @@ function located(records) {
   return records.filter((r) => r.lat != null && r.lon != null);
 }
 
+// Case-insensitive match against the shared `selectedBorough` global (state.js) --
+// "all" (the default) always matches. See BOROUGHS' comment in state.js for why this
+// can't just be `===`: the three feeds that carry a borough field don't agree on case.
+function inBorough(value) {
+  if (selectedBorough === "all") return true;
+  return typeof value === "string" && value.toUpperCase() === selectedBorough.toUpperCase();
+}
+
+// Applied by the three layer builders below whose record types actually carry a clean
+// borough field (cameraLayer/area, layer311/borough, inspectionsLayer/boro) and by
+// their sidebar counts (boroughCountLabel), so the markers drawn on the map and the
+// count text next to their checkbox never disagree about what "selected" means. Every
+// other layer (subway, density, Citi Bike, buses) ignores selectedBorough entirely --
+// they don't have a comparable borough field, so forcing one on would be a fabrication.
+function boroughFiltered(records, field) {
+  return selectedBorough === "all" ? records : records.filter((r) => inBorough(r[field]));
+}
+
+// Sidebar count text (FEEDS[].count) for the three borough-filterable layers: once a
+// borough is selected this shows "<drawn> of <total> <noun> · <borough>" instead of the
+// unfiltered citywide total, so the number next to the checkbox always matches what's
+// actually on the map -- never a stale count left over from before the filter changed.
+function boroughCountLabel(records, field, noun) {
+  const total = records.length;
+  if (selectedBorough === "all") return `${total} ${noun}`;
+  return `${boroughFiltered(records, field).length} of ${total} ${noun} · ${selectedBorough}`;
+}
+
 // Bus route ids from MTA Bus Time (BusVehicle.route_id) are agency-qualified, e.g.
 // "MTA NYCT_Q30" -- strip the agency prefix for the short route code that's actually
 // painted on the bus and shown to riders. Used for the marker color lookup below,
@@ -126,7 +154,7 @@ function densityLayer(envelope) {
 }
 
 function layer311(envelope) {
-  const data = located(envelope.records);
+  const data = boroughFiltered(located(envelope.records), "borough");
   if (!data.length) return null;
   return new deck.ScatterplotLayer({
     id: "nyc311",
@@ -212,7 +240,7 @@ function bikeLayer(envelope, zoom) {
 }
 
 function cameraLayer(envelope) {
-  const data = located(envelope.records);
+  const data = boroughFiltered(located(envelope.records), "area");
   if (!data.length) return null;
   return new deck.ScatterplotLayer({
     id: "cameras",
@@ -310,7 +338,7 @@ function subwayShapesLayer(envelope) {
 }
 
 function inspectionsLayer(envelope) {
-  const data = located(envelope.records);
+  const data = boroughFiltered(located(envelope.records), "boro");
   if (!data.length) return null;
   return new deck.ScatterplotLayer({
     id: "dohmh",
@@ -356,7 +384,7 @@ const FEEDS = [
     query: "limit=1000",
     defaultVisible: true,
     build: layer311,
-    count: (env) => `${env.records.length} requests`,
+    count: (env) => boroughCountLabel(env.records, "borough", "requests"),
   },
   {
     key: "citibike",
@@ -372,7 +400,7 @@ const FEEDS = [
     query: "limit=2000",
     defaultVisible: false,
     build: cameraLayer,
-    count: (env) => `${env.records.length} cameras`,
+    count: (env) => boroughCountLabel(env.records, "area", "cameras"),
   },
   {
     key: "dohmh_inspections",
@@ -380,7 +408,7 @@ const FEEDS = [
     query: "limit=1000",
     defaultVisible: false, // dense data; opt-in like DOT cameras
     build: inspectionsLayer,
-    count: (env) => `${env.records.length} inspections`,
+    count: (env) => boroughCountLabel(env.records, "boro", "inspections"),
   },
   {
     key: "mta_bus",
@@ -529,4 +557,55 @@ function createRecenterControl() {
       this._container = null;
     },
   };
+}
+
+// The borough filter chips in #panel (index.html's #borough-filter). One write site
+// for the shared `selectedBorough` global (state.js), mirroring how selectRoute() in
+// alerts-banner.js is the sole writer for `highlightedRoute`: update the global,
+// reflect the active chip, refresh the three affected layers' sidebar counts (they
+// depend on selectedBorough via boroughCountLabel and would otherwise sit stale until
+// the next poll/SSE tick), and ask map-layers.js's own renderLayers() to rebuild the
+// map -- cameraLayer/layer311/inspectionsLayer's `data` hasn't changed, only which
+// records pass the filter, so without this call the map would stay stale too.
+const BOROUGH_FILTERED_KEYS = ["dot_cameras", "nyc_311", "dohmh_inspections"];
+
+function setSelectedBorough(borough) {
+  if (borough === selectedBorough) return;
+  selectedBorough = borough;
+  const container = el("borough-filter");
+  if (container) {
+    for (const chip of container.querySelectorAll(".borough-chip")) {
+      const active = chip.dataset.borough === borough;
+      chip.classList.toggle("is-active", active);
+      chip.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  }
+  for (const key of BOROUGH_FILTERED_KEYS) {
+    const entry = state.get(key);
+    if (entry && entry.envelope && typeof setPill === "function") setPill(key, entry.envelope);
+  }
+  renderLayers();
+}
+
+function handleBoroughFilterClick(event) {
+  const chip = event.target.closest(".borough-chip[data-borough]");
+  if (!chip) return;
+  setSelectedBorough(chip.dataset.borough);
+}
+
+// Wires the static #borough-filter markup that index.html already renders. Not called
+// from app.js's boot sequence (out of scope for this feature -- see the top-of-file
+// ownership note); instead this self-initializes on DOMContentLoaded, the same idiom
+// app.js itself uses at the bottom of its own file, since these are plain deferred
+// scripts with no module system to hand this an explicit call site.
+function initBoroughFilter() {
+  const container = document.getElementById("borough-filter");
+  if (!container) return;
+  container.addEventListener("click", handleBoroughFilterClick);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initBoroughFilter);
+} else {
+  initBoroughFilter();
 }

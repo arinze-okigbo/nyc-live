@@ -48,6 +48,19 @@
         <div id="detail-panel" class="detail-panel" hidden></div>
       </div>
       <aside id="panel">
+        <h2>Borough</h2>
+        <p class="hint">
+          Narrows <b>DOT cameras</b>, <b>311 requests</b>, and <b>restaurant inspections</b>
+          to one borough. Subway, camera density, Citi Bike, and buses are unaffected.
+        </p>
+        <div id="borough-filter" class="borough-filter" role="group" aria-label="Filter by borough">
+          <button type="button" class="borough-chip is-active" data-borough="all" aria-pressed="true">All</button>
+          <button type="button" class="borough-chip" data-borough="Manhattan" aria-pressed="false">Manhattan</button>
+          <button type="button" class="borough-chip" data-borough="Brooklyn" aria-pressed="false">Brooklyn</button>
+          <button type="button" class="borough-chip" data-borough="Queens" aria-pressed="false">Queens</button>
+          <button type="button" class="borough-chip" data-borough="Bronx" aria-pressed="false">Bronx</button>
+          <button type="button" class="borough-chip" data-borough="Staten Island" aria-pressed="false">Staten Island</button>
+        </div>
         <h2>Layers</h2>
         <p class="hint">
           Each layer shows its own feed status. A <b>stale</b> layer is the last good
