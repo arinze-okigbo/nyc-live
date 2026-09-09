@@ -211,3 +211,101 @@ main {
 
   .badge { max-width: min(200px, 60vw); }
 }
+
+/* Phone-width layout (~375-430px is the target, 480px is the cutoff with a little
+   headroom). Below this the "map on top, panel below in normal page flow" stacking
+   from the 900px rule above still leaves the map sharing scroll with everything
+   else -- scrolling down to read alerts/layers carries the map off-screen with it.
+   Turn #panel into a docked bottom sheet instead: the map fills the entire viewport
+   underneath (position: absolute, not squeezed to a fraction of it) and the panel
+   overlays its bottom edge with its own independent scroll, so the map never moves
+   and every sidebar item is still reachable by scrolling the sheet. This requires
+   `body` to establish the column flex context (topbar/banner sized to content, main
+   given the remaining space) since tokens.css intentionally owns no `display` rule
+   on body for the desktop/tablet layouts above. */
+@media (max-width: 480px) {
+  html, body {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  #topbar { flex: 0 0 auto; }
+  .banner { flex: 0 0 auto; }
+
+  main {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+  }
+
+  #map {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* `main #panel` (id + ancestor type selector) beats layers-panel.css's plain
+     `#panel` rule on specificity alone, the same trick the 900px block above
+     already relies on -- load order alone would otherwise let that later-loaded
+     stylesheet's `flex: 0 0 300px` win. */
+  main #panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: 60vh;
+    border-top: none;
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 20px -8px rgba(0, 0, 0, 0.6);
+    z-index: 3;
+  }
+
+  /* Small drag-handle affordance so the docked panel reads as a pull-up sheet
+     rather than a stray floating card -- purely decorative, the actual "pulling"
+     is just scrolling the sheet's own content. */
+  #panel::before {
+    content: "";
+    display: block;
+    width: 36px;
+    height: 4px;
+    margin: 2px auto 10px;
+    border-radius: 2px;
+    background: var(--line);
+  }
+
+  #topbar { padding: 6px 10px; gap: 6px 8px; }
+  #topbar h1 { font-size: 13px; }
+  .badge { font-size: 11px; padding: 3px 8px; max-width: min(150px, 55vw); }
+
+  /* MapLibre's own zoom/compass buttons and the custom recenter control (see
+     createRecenterControl in map-layers.js, which reuses this same
+     maplibregl-ctrl-group container class) render at a fixed 29x29px -- comfortably
+     clickable with a mouse but under the ~44px touch target baseline. The icon is a
+     fixed-size inner element already centered by MapLibre's own CSS, so growing just
+     the button and re-centering its content is enough; nothing about the icon
+     graphic itself needs to change. Prefixed with `#map` (an id) rather than plain
+     `.maplibregl-ctrl-group button` -- maplibre-gl.css's own same-specificity rule
+     loads after this stylesheet (its <link> is below ours in index.html), so without
+     that extra id this would silently lose on source order despite the media query
+     matching. */
+  #map .maplibregl-ctrl-group button {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}

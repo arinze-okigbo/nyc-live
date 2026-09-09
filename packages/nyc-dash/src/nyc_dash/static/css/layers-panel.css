@@ -50,6 +50,7 @@
 .icon.layer-marker-citibike { color: #104281; }
 .icon.layer-marker-dot_cameras { color: #898781; }
 .icon.layer-marker-dohmh_inspections { color: #2ecc71; }
+.icon.layer-marker-mta_bus { color: #f4d35e; }
 
 .pill {
   border-radius: 999px;
@@ -108,3 +109,27 @@
 .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .swatch.heat, .swatch.ramp { width: 28px; height: 10px; border-radius: 3px; }
 .swatch.heat { background: linear-gradient(90deg, #2b6cb0, #f6e05e, #e53e3e); }
+
+/* Phone width: the panel is a scrollable bottom sheet (see chrome.css), so trim its
+   own padding to leave more of that limited height for content, and grow the layer
+   row's touch targets. The checkbox's own box stays modest in size for legibility,
+   but the `<label for>` it's paired with already toggles it on click/tap -- padding
+   added to that label (rather than forcing the checkbox itself to ~44px, which would
+   look oversized next to 12-13px text) is what actually grows the tappable area,
+   since a click anywhere in the label's padding box still fires the association. */
+@media (max-width: 480px) {
+  #panel { padding: 8px 12px 20px; }
+  #panel h2 { margin: 12px 0 6px; }
+
+  #layers li { padding: 6px 10px; margin-bottom: 6px; }
+
+  .layer-head { min-height: 44px; gap: 10px; }
+  .layer-head label { padding: 12px 0; }
+
+  #layers input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+  }
+
+  .pill { padding: 3px 10px; font-size: 12px; }
+}
