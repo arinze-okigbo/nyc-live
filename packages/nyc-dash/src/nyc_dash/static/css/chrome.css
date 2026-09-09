@@ -1,45 +1,66 @@
 /*
  * Global page chrome: header/topbar, status badges, the error banner, the main layout
- * split (map + sidebar), and the map's own loading state. Reads color tokens from
- * tokens.css (:root) -- never redefine a token here, only consume var(--...).
+ * split (map + sidebar), and the map's own loading state. Reads every color, size,
+ * space, radius, shadow and duration from tokens.css (:root) -- never redefine a token
+ * here, and never write a raw hex/px where a token exists, only consume var(--...).
  */
 
+/* The topbar is the only always-visible surface, so it carries the page's whole
+   vertical rhythm: --space-sm above/below its content, --space-xl in from the edges
+   (the same inset the banner below it uses, so the wordmark, the banner glyph and
+   anything else in the chrome share one left margin). */
 #topbar {
   min-height: var(--topbar-h);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 10px;
-  padding: 7px 14px;
+  gap: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) var(--space-xl);
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   /* Sits directly above the map, so it needs its own visual weight -- a border
      alone reads as flat once map tiles (which can be very light) are underneath. */
-  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--shadow-md);
   position: relative;
-  z-index: 2;
+  z-index: var(--z-topbar);
 }
 
+/* Wordmark, then a hairline, then the status cluster: the rule separates "what this
+   app is" from "what it is currently doing" without adding another color or weight,
+   and it survives the topbar wrapping to a second row on a phone (the divider simply
+   ends the first row's title group). */
 #topbar h1 {
   flex: 0 0 auto;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  margin: 0 8px 0 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-md);
+  margin: 0;
+  /* 8px + the 1px rule + the row's own 10px gap = the same 18px of air the wordmark
+     had before the divider existed, so adding it costs the row a single pixel and
+     cannot push a badge onto a second line that used to fit. */
+  padding-right: var(--space-sm);
+  border-right: 1px solid var(--line);
   text-transform: uppercase;
   white-space: nowrap;
 }
 
+/* Status chips are recessed into the bar (--surface-inset) rather than outlined on
+   it: the fill gives each chip a readable shape at a glance, and because it is
+   *darker* than --panel every status hue gains contrast on it rather than losing it
+   (--error goes 4.7:1 -> 5.0:1), which an outlined-on-lighter treatment would not. */
 .badge {
   flex: 0 1 auto;
   border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 12px;
+  border-radius: var(--radius-pill);
+  padding: var(--space-2xs) var(--space-md);
+  font-size: var(--font-size-sm);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Counts in these chips change on every poll; tabular figures stop the chip from
+     twitching a pixel wider/narrower as digits swap. */
+  font-variant-numeric: tabular-nums;
   /* Scales with viewport but is capped in both directions so a single badge never
      hogs most of a wide window, nor sits stuck at an unreadable sliver on a narrow
      one -- flex-wrap on #topbar is what actually keeps things from overlapping;
@@ -47,12 +68,25 @@
   max-width: min(280px, 40vw);
 }
 
+/* Scoped to #topbar (id + class) on purpose: #shortcuts-button is also a `.badge`
+   and sets `background: none` from index.html's inline <style>, which would win over
+   a plain `.badge` rule on specificity and leave one chip in the row unfilled. */
+#topbar .badge { background: var(--surface-inset); }
+
 .badge[data-status="fresh"] { color: var(--fresh); border-color: var(--fresh); }
 .badge[data-status="stale"] { color: var(--stale); border-color: var(--stale); }
 .badge[data-status="error"] { color: var(--error); border-color: var(--error); }
 .badge[data-mode="live"] { color: var(--fresh); border-color: var(--fresh); }
 .badge[data-mode="polling"] { color: var(--stale); border-color: var(--stale); }
 .badge[data-mode="down"] { color: var(--error); border-color: var(--error); }
+
+/* A dead feed or a dead connection is the one topbar state worth breaking the row's
+   uniformity for, so those two chips swap the neutral inset fill for a red wash
+   (still 4.6:1 for their own text). "stale" deliberately stays neutral -- it is a
+   normal, frequent state and does not deserve to shout. Needs the #topbar prefix to
+   outrank the base fill rule above, same reason as that rule's own comment. */
+#topbar .badge[data-status="error"],
+#topbar .badge[data-mode="down"] { background: var(--error-tint); }
 
 /* Weather badge only turns clickable (status-panel.js's `.has-forecast`) once a real
    forecast has actually loaded -- no affordance is ever shown for data that isn't
@@ -63,7 +97,7 @@
 .badge.has-forecast { cursor: pointer; }
 .badge.has-forecast::after {
   content: "\25BE";
-  margin-left: 4px;
+  margin-left: var(--space-2xs);
   opacity: 0.7;
 }
 
@@ -81,7 +115,7 @@
    disturb the ellipsis-truncated badge text or collide with the ::after caret above. */
 .badge[data-alert-severity]::before {
   content: "\26A0";
-  margin-right: 4px;
+  margin-right: var(--space-2xs);
 }
 .badge[data-alert-severity="moderate"],
 .badge[data-alert-severity="minor"] {
@@ -103,17 +137,17 @@
    the badge's own getBoundingClientRect() -- appended to <body>, not nested inside
    the badge, since `.badge` above sets `overflow: hidden` for its own ellipsis text
    and would otherwise clip this silently. Sits above the click-detail panel
-   (z-index 5 in detail-panel.css) since both can be open across a narrow viewport. */
+   (--z-detail in detail-panel.css) since both can be open across a narrow viewport. */
 .weather-forecast-popover {
   position: fixed;
-  z-index: 6;
-  width: min(260px, calc(100vw - 24px));
+  z-index: var(--z-popover);
+  width: min(260px, calc(100vw - var(--space-3xl)));
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  font-size: 12px;
+  border-radius: var(--radius-lg);
+  padding: var(--space-md) var(--space-lg);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--font-size-sm);
   color: var(--text);
 }
 
@@ -123,11 +157,11 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-sm);
 }
 
 .weather-period-list li + li {
-  padding-top: 8px;
+  padding-top: var(--space-sm);
   border-top: 1px solid var(--line);
 }
 
@@ -135,13 +169,13 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  font-weight: 600;
+  gap: var(--space-sm);
+  font-weight: var(--weight-semibold);
 }
 
 .weather-period-temp { color: var(--muted); font-weight: 400; }
 
-.weather-period-detail { margin: 2px 0 0; color: var(--muted); }
+.weather-period-detail { margin: var(--space-3xs) 0 0; color: var(--muted); }
 
 /* Alerts render as their own visually distinct block above the forecast periods --
    urgent/station-specific vs. routine/upcoming, so they get a tinted, accent-bordered
@@ -154,40 +188,40 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-sm);
 }
 
 /* Only present when the popover has both alerts and a forecast -- separates the two
    sections without a redundant border when only one is showing. */
 .weather-alert-list + .weather-period-list {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
   border-top: 1px solid var(--line);
 }
 
 .weather-alert {
   border-left: 3px solid var(--stale);
-  background: rgba(244, 162, 89, 0.1);
-  border-radius: 4px;
-  padding: 6px 8px;
+  background: var(--stale-tint);
+  border-radius: var(--radius-xs);
+  padding: var(--space-xs) var(--space-sm);
 }
 .weather-alert[data-severity="extreme"],
 .weather-alert[data-severity="severe"] {
   border-left-color: var(--error);
-  background: rgba(239, 71, 111, 0.1);
+  background: var(--error-tint);
 }
 
 .weather-alert-head {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  font-weight: 600;
+  gap: var(--space-xs);
+  font-weight: var(--weight-semibold);
 }
 
 .weather-alert-severity {
   text-transform: uppercase;
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  font-size: var(--font-size-2xs);
+  letter-spacing: var(--tracking-sm);
   color: var(--stale);
 }
 .weather-alert[data-severity="extreme"] .weather-alert-severity,
@@ -200,9 +234,9 @@
 .weather-alert-headline,
 .weather-alert-area,
 .weather-alert-station {
-  margin: 4px 0 0;
+  margin: var(--space-2xs) 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
 }
 .weather-alert-station { font-style: italic; }
 
@@ -212,27 +246,32 @@
    rule regardless of selector specificity. */
 .banner[hidden] { display: none; }
 
+/* Shares the topbar's --space-xl side inset so the glyph lines up under the wordmark,
+   and hangs its text off a flex-start glyph rather than centering it, so a long
+   multi-line error wraps as a paragraph instead of pushing the icon into the middle. */
 .banner {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  background: linear-gradient(180deg, #3a1f2b, #2e1822);
-  border-top: 1px solid rgba(239, 71, 111, 0.4);
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-xl);
+  background: linear-gradient(180deg, var(--error-surface), var(--error-surface-deep));
+  border-top: 1px solid var(--error-line);
   border-bottom: 1px solid var(--error);
   box-shadow: inset 0 0 0 1px rgba(239, 71, 111, 0.06);
-  color: #ffd7e0;
-  font-size: 13px;
+  color: var(--error-ink);
+  font-size: var(--font-size-md);
+  line-height: var(--leading-snug);
 }
 
 /* A text-only alert bar reads like leftover debug output; a small warning glyph
    (no markup change needed -- generated content) makes it clearly an intentional
-   error state rather than an unstyled default. */
+   error state rather than an unstyled default. The line-height matches the text's
+   first line so the glyph sits on the same baseline it would if it were a word. */
 .banner::before {
   content: "\26A0";
   flex: 0 0 auto;
-  font-size: 14px;
-  line-height: 1;
+  font-size: var(--font-size-base);
+  line-height: var(--leading-snug);
   color: var(--error);
 }
 
@@ -244,7 +283,18 @@ main {
 #map {
   flex: 1 1 auto;
   position: relative;
-  background: #0b0e13;
+  background: var(--surface-sunken);
+}
+
+/* The dark sidebar over a light basemap is the page's strongest edge, and a 1px
+   border was carrying all of it. Lifting the panel with a soft directional shadow
+   (and the z-index/position it needs to actually paint over its map sibling) makes
+   the split read as "chrome floating above the map" -- the same story the topbar's
+   own shadow tells -- instead of two flat regions butted together. */
+main #panel {
+  position: relative;
+  z-index: 1;
+  box-shadow: var(--shadow-panel);
 }
 
 /* Vector tiles for all five boroughs take a few seconds to stream in on first
@@ -254,7 +304,7 @@ main {
    MapLibre fires 'idle') takes over and this reverts to the plain background
    the loaded canvas will sit on. */
 #map:not(.ready) {
-  background: linear-gradient(115deg, #0b0e13 30%, #171d27 50%, #0b0e13 70%);
+  background: linear-gradient(115deg, var(--surface-sunken) 30%, var(--panel) 50%, var(--surface-sunken) 70%);
   background-size: 240% 100%;
   animation: map-shimmer 2.4s ease-in-out infinite;
 }
@@ -272,7 +322,7 @@ main {
 #map > canvas,
 #deckgl-overlay {
   opacity: 0;
-  transition: opacity 0.5s ease;
+  transition: opacity var(--duration-slow) var(--ease-out);
 }
 #map.ready .maplibregl-canvas-container,
 #map.ready > canvas,
@@ -282,7 +332,10 @@ main {
 
 /* Centered pill card (not a full-bleed overlay) so it reads as a small status
    indicator floating above the shimmering skeleton, rather than a second flat
-   layer stacked on top of it. */
+   layer stacked on top of it. Opaque --panel rather than a translucent scrim: the
+   skeleton behind it is itself animating, and a see-through pill let that movement
+   crawl through the label. Elevation and radius come from the same tokens the
+   floating cards elsewhere on the page use, so it reads as part of the same family. */
 #map-loading {
   position: absolute;
   top: 50%;
@@ -290,24 +343,29 @@ main {
   transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: rgba(16, 20, 26, 0.6);
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-xl);
+  background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-md);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--font-size-md);
+  letter-spacing: var(--tracking-sm);
   pointer-events: none;
-  transition: opacity 0.3s ease;
+  transition: opacity var(--duration-base) var(--ease-out);
 }
 #map.ready #map-loading { opacity: 0; }
 
+/* The sweep is drawn in --text, not --muted: against the --line track it is the one
+   moving thing on an otherwise still card, and at 2px it needs the contrast to read
+   as motion rather than as a slightly uneven ring. */
 #map-loading .spinner {
-  width: 14px;
-  height: 14px;
+  width: var(--font-size-base);
+  height: var(--font-size-base);
   border-radius: 50%;
   border: 2px solid var(--line);
-  border-top-color: var(--muted);
+  border-top-color: var(--text);
   animation: spin 0.8s linear infinite;
   flex: 0 0 auto;
 }
@@ -320,9 +378,13 @@ main {
 
 @media (prefers-reduced-motion: reduce) {
   #map-loading .spinner { animation: none; }
+  #map .maplibregl-canvas-container,
+  #map > canvas,
+  #deckgl-overlay,
+  #map-loading { transition: none; }
   #map:not(.ready) {
     animation: none;
-    background: #10141b;
+    background: var(--bg);
   }
   .badge[data-alert-severity="severe"],
   .badge[data-alert-severity="extreme"] {
@@ -331,11 +393,12 @@ main {
 }
 
 .deck-tooltip {
-  font-size: 12px;
-  background: rgba(16, 20, 26, 0.94) !important;
+  font-size: var(--font-size-sm);
+  background: var(--overlay-strong) !important;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 8px !important;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-xs) var(--space-sm) !important;
 }
 
 /* Below roughly 900px the 300px-fixed sidebar next to the map leaves too little
@@ -357,12 +420,16 @@ main {
     min-height: 260px;
   }
 
+  /* The panel is now *below* the map, so the desktop rule's sideways shadow would
+     fall off the page edge -- point the same lift upwards instead, at the seam it
+     now shares with the map. */
   main #panel {
     flex: 1 1 auto;
     width: 100%;
     max-height: none;
     border-left: none;
     border-top: 1px solid var(--line);
+    box-shadow: var(--shadow-sheet);
   }
 
   .badge { max-width: min(200px, 60vw); }
@@ -424,9 +491,9 @@ main {
     width: 100%;
     max-height: 60vh;
     border-top: none;
-    border-radius: 14px 14px 0 0;
-    box-shadow: 0 -8px 20px -8px rgba(0, 0, 0, 0.6);
-    z-index: 3;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    box-shadow: var(--shadow-sheet);
+    z-index: var(--z-sheet);
   }
 
   /* Small drag-handle affordance so the docked panel reads as a pull-up sheet
@@ -436,15 +503,24 @@ main {
     content: "";
     display: block;
     width: 36px;
-    height: 4px;
-    margin: 2px auto 10px;
-    border-radius: 2px;
+    height: var(--space-2xs);
+    margin: var(--space-3xs) auto var(--space-md);
+    border-radius: var(--radius-2xs);
     background: var(--line);
   }
 
-  #topbar { padding: 6px 10px; gap: 6px 8px; }
-  #topbar h1 { font-size: 13px; }
-  .badge { font-size: 11px; padding: 3px 8px; max-width: min(150px, 55vw); }
+  /* Tighter chrome for the phone: the wordmark drops a step, the divider's gap
+     halves, and the chips narrow. Their *vertical* padding stays at the desktop
+     step on purpose -- #shortcuts-button is a real tap target wearing `.badge`, and
+     this row is where that matters most, so the row is allowed the two extra pixels. */
+  #topbar { padding: var(--space-xs) var(--space-md); gap: var(--space-xs) var(--space-sm); }
+  #topbar h1 { font-size: var(--font-size-md); padding-right: var(--space-xs); }
+  .badge {
+    font-size: var(--font-size-xs);
+    padding: var(--space-2xs) var(--space-sm);
+    max-width: min(150px, 55vw);
+  }
+  .banner { padding: var(--space-sm) var(--space-md); }
 
   /* Search and Borough (the two sections added to the top of #panel since this sheet
      was built) are the first two `<p class="hint">` children of #panel in source
@@ -461,7 +537,7 @@ main {
   /* MapLibre's own zoom/compass buttons and the custom recenter control (see
      createRecenterControl in map-layers.js, which reuses this same
      maplibregl-ctrl-group container class) render at a fixed 29x29px -- comfortably
-     clickable with a mouse but under the ~44px touch target baseline. The icon is a
+     clickable with a mouse but under the --tap-target touch baseline. The icon is a
      fixed-size inner element already centered by MapLibre's own CSS, so growing just
      the button and re-centering its content is enough; nothing about the icon
      graphic itself needs to change. Prefixed with `#map` (an id) rather than plain
@@ -470,8 +546,8 @@ main {
      that extra id this would silently lose on source order despite the media query
      matching. */
   #map .maplibregl-ctrl-group button {
-    width: 44px;
-    height: 44px;
+    width: var(--tap-target);
+    height: var(--tap-target);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -489,9 +565,9 @@ main {
      viewport space instead of a guessed constant -- no !important needed to beat
      the inline `left`, since nothing here sets `left`. At wider phone widths this
      just makes the popover a bit wider than the 260px default, still comfortably
-     inside the badge-anchored left edge and this same 12px right margin. */
+     inside the badge-anchored left edge and this same --space-lg right margin. */
   .weather-forecast-popover {
-    right: 12px;
+    right: var(--space-lg);
     width: auto;
   }
 }

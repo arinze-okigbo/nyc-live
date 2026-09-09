@@ -1,17 +1,160 @@
 /*
- * Design tokens: the only place color/spacing constants are defined. Every other
- * stylesheet on this page references these custom properties, never a raw hex value.
+ * Design tokens: the only place color, type, space, radius, elevation and motion
+ * constants are defined. Every other stylesheet on this page references these custom
+ * properties, never a raw hex/px value.
+ *
+ * The scale below was derived from the values the app was already using, not imposed
+ * on top of it: every step here is a value that appears verbatim in at least one of
+ * the six stylesheets, so a file can migrate to a token without its rendering moving
+ * at all. Where two neighbouring one-offs existed (7/8px, 9/10px, 11.5/12px) the
+ * scale keeps the round one and the odd one is expected to round to it when that file
+ * migrates -- a <=1px change, never a redesign.
+ *
+ * Nothing here is theme-switchable: the app is fixed dark chrome over a light
+ * basemap by design (there is no light/dark toggle), and the status hues
+ * (--fresh/--stale/--error) were validated for colorblind separation in an earlier
+ * cycle -- see the palette comment at the top of js/map-layers.js before touching
+ * any of them.
  */
 :root {
+  /* --- Surfaces -----------------------------------------------------------
+     Four steps of dark, deepest first. --bg is the page, --panel is every chrome
+     surface that sits on it (topbar, sidebar, floating cards), --surface-inset is
+     a control recessed into one of those (topbar badges, the search field), and
+     --surface-sunken is the void behind the map before tiles arrive. Recessing a
+     control rather than raising it is deliberate: on this palette every status hue
+     gains contrast against a darker fill (--error goes 4.7:1 -> 5.0:1 vs --panel),
+     so the chips stay AA-legible in all three states. */
   --bg: #10141a;
   --panel: #171c25;
+  --surface-inset: #12161d;
+  --surface-sunken: #0b0e13;
+
+  /* --- Lines and ink ----------------------------------------------------- */
   --line: #232b38;
   --text: #e6ebf2;
   --muted: #8d99ae;
+
+  /* --- Status hues (frozen: CVD-validated, see js/map-layers.js) ---------- */
   --fresh: #2ecc71;
   --stale: #f4a259;
   --error: #ef476f;
+
+  /* --- Status tints -------------------------------------------------------
+     Low-alpha washes of the hues above, for filled backgrounds where the solid
+     hue would be far too loud. Already used ad hoc in three stylesheets. */
+  --fresh-tint: rgba(46, 204, 113, 0.14);
+  --stale-tint: rgba(244, 162, 89, 0.1);
+  --error-tint: rgba(239, 71, 111, 0.1);
+  --error-line: rgba(239, 71, 111, 0.4);
+  --muted-tint: rgba(141, 153, 174, 0.08);
+  --text-tint: rgba(230, 235, 242, 0.08);
+
+  /* The page-level error banner: a desaturated red surface dark enough to sit in
+     the chrome, with an ink light enough to stay comfortably above 4.5:1 on it. */
+  --error-surface: #3a1f2b;
+  --error-surface-deep: #2e1822;
+  --error-ink: #ffd7e0;
+
+  /* --- Overlays -----------------------------------------------------------
+     --bg at two alphas, for things drawn on top of the (light) basemap. */
+  --overlay-scrim: rgba(16, 20, 26, 0.72);
+  --overlay-strong: rgba(16, 20, 26, 0.94);
+
+  /* --- Type ---------------------------------------------------------------
+     14px/1.45 is the body; everything else is one of six steps below or one
+     above it. The uppercase label sizes (2xs/xs/sm) always pair with one of the
+     --tracking-* values, since this face gets tight and muddy in small caps. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --font-size-2xs: 10px;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-base: 14px;
+  --font-size-lg: 15px;
+  --font-size-xl: 16px;
+
+  --leading-none: 1;
+  --leading-tight: 1.3;
+  --leading-snug: 1.4;
+  --leading-normal: 1.45;
+
+  --tracking-sm: 0.04em;
+  --tracking-md: 0.06em;
+  --tracking-lg: 0.08em;
+
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* --- Space --------------------------------------------------------------
+     A 4px rhythm with 2px half-steps at the small end, where icon/text gaps and
+     chip padding actually live. Nothing in this app needs a step above 24px. */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs: 6px;
+  --space-sm: 8px;
+  --space-md: 10px;
+  --space-lg: 12px;
+  --space-xl: 16px;
+  --space-2xl: 20px;
+  --space-3xl: 24px;
+
+  /* --- Radii --------------------------------------------------------------
+     Grows with the size of the box: swatches and key caps at the bottom, list
+     rows and inputs in the middle, floating cards and the phone sheet at the top. */
+  --radius-2xs: 2px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-pill: 999px;
+
+  /* --- Elevation ----------------------------------------------------------
+     Four steps plus two directional ones. Every shadow on this page is pure black
+     at an alpha, never a tinted one -- the chrome is dark enough that a colored
+     shadow just reads as a smudge. --shadow-panel/-sheet exist because the sidebar
+     casts onto the map sideways on desktop and upwards as a phone bottom sheet. */
+  --shadow-sm: 0 2px 8px -4px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 4px 14px -6px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 24px 60px -20px rgba(0, 0, 0, 0.75);
+  --shadow-panel: -12px 0 28px -18px rgba(0, 0, 0, 0.85);
+  --shadow-sheet: 0 -8px 20px -8px rgba(0, 0, 0, 0.6);
+
+  /* --- Motion -------------------------------------------------------------
+     Every transition on the page is one of these three. Anything longer is a
+     deliberate ambient loop (shimmer, pulse) and keeps its own literal duration.
+     All of them are additionally gated by prefers-reduced-motion at the point of
+     use -- adopting these tokens does not change that obligation. */
+  --duration-fast: 150ms;
+  --duration-base: 300ms;
+  --duration-slow: 500ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* --- Focus --------------------------------------------------------------
+     One ring for the whole app, already hand-written identically in three files.
+     Usable as `outline: var(--focus-ring); outline-offset: var(--focus-ring-offset);` */
+  --focus-ring: 2px solid var(--text);
+  --focus-ring-offset: 1px;
+
+  /* --- Layout -------------------------------------------------------------
+     --tap-target is the touch-target floor the phone breakpoints size controls to. */
   --topbar-h: 48px;
+  --panel-w: 300px;
+  --tap-target: 44px;
+
+  /* --- Stacking -----------------------------------------------------------
+     The whole z-index vocabulary of the page, in one place, so a new floating
+     thing can be slotted in without reading five stylesheets to find out what it
+     has to clear. */
+  --z-topbar: 2;
+  --z-sheet: 3;
+  --z-detail: 5;
+  --z-popover: 6;
+  --z-overlay: 20;
 }
 
 * { box-sizing: border-box; }
@@ -21,10 +164,9 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font: var(--font-size-base)/var(--leading-normal) var(--font-sans);
 }
 
 /* Shared base for every icon() SVG from js/icons.js -- currentColor lets each caller
    recolor via plain CSS `color` on the icon or an ancestor, no per-icon override. */
 .icon { flex: 0 0 auto; color: var(--muted); vertical-align: -2px; }
-
