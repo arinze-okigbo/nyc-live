@@ -30,6 +30,21 @@ const SEQUENTIAL_BLUE_LIGHT = [183, 211, 246]; // step 150, #b7d3f6 -- near-empt
 const SEQUENTIAL_BLUE_DARK = [16, 66, 129]; // step 650, #104281 -- near-full
 const MUTED_INK = [137, 135, 129]; // #898781 -- "no data", never a point on the scale
 
+// Restaurant grades read as status, not an arbitrary new hue: these are the exact
+// --fresh/--stale/--error CSS variables from style.css, converted to RGB for deck.gl.
+// Anything that isn't A/B/C (ungraded, pending, null) uses MUTED_INK, same as "no data"
+// elsewhere on this map.
+const GRADE_A = [46, 204, 113]; // --fresh #2ecc71
+const GRADE_B = [244, 162, 89]; // --stale #f4a259
+const GRADE_C = [239, 71, 111]; // --error #ef476f
+
+function gradeColor(grade) {
+  if (grade === "A") return GRADE_A;
+  if (grade === "B") return GRADE_B;
+  if (grade === "C") return GRADE_C;
+  return MUTED_INK;
+}
+
 function lerpColor(from, to, t) {
   const c = Math.max(0, Math.min(1, t));
   return [
@@ -93,6 +108,14 @@ const FEEDS = [
     build: cameraLayer,
     count: (env) => `${env.records.length} cameras`,
   },
+  {
+    key: "dohmh_inspections",
+    label: "Restaurant inspections",
+    query: "limit=1000",
+    defaultVisible: false, // dense data; opt-in like DOT cameras
+    build: inspectionsLayer,
+    count: (env) => `${env.records.length} inspections`,
+  },
 ];
 
 const WEATHER_KEY = "weather";
@@ -114,6 +137,16 @@ function hhmmss(iso) {
   if (!iso) return "unknown time";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
+}
+
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+// Upstream text (restaurant names, 311 descriptors, camera names, GTFS stop names) is
+// never trusted as markup: every detail panel and tooltip runs interpolated values
+// through this before landing in innerHTML.
+function escapeHtml(value) {
+  if (value == null) return "";
+  return String(value).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
 }
 
 function banner(message) {
@@ -338,6 +371,26 @@ function cameraLayer(envelope) {
   });
 }
 
+function inspectionsLayer(envelope) {
+  const data = located(envelope.records);
+  if (!data.length) return null;
+  return new deck.ScatterplotLayer({
+    id: "dohmh",
+    data,
+    pickable: true,
+    radiusUnits: "meters",
+    getPosition: (d) => [d.lon, d.lat],
+    getRadius: 30,
+    radiusMinPixels: 2,
+    radiusMaxPixels: 8,
+    getFillColor: (d) => [...gradeColor(d.grade), 200],
+    getLineColor: [255, 255, 255, 100],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    updateTriggers: { getFillColor: envelope.fetched_at },
+  });
+}
+
 function renderLayersNow() {
   if (!overlay) return;
   const layers = [];
@@ -371,34 +424,263 @@ function tooltip({ object, layer }) {
   if (!object) return null;
   if (layer.id === "subway") {
     return {
-      html: `<b>${object.route_id}</b> to ${object.stop_name || object.stop_id}<br/>in ${Math.round(
-        object.eta_s / 60
-      )} min`,
+      html: `<b>${escapeHtml(object.route_id)}</b> to ${escapeHtml(
+        object.stop_name || object.stop_id
+      )}<br/>in ${Math.round(object.eta_s / 60)} min · click for the full stop list`,
     };
   }
   if (layer.id === "density") {
     return {
-      html: `<b>${object.name || object.camera_id}</b><br/>people ${object.person_mean.toFixed(
+      html: `<b>${escapeHtml(object.name || object.camera_id)}</b><br/>people ${object.person_mean.toFixed(
         1
       )} · vehicles ${object.vehicle_mean.toFixed(1)}<br/>${object.sample_count} frames`,
     };
   }
   if (layer.id === "nyc311") {
     return {
-      html: `<b>${object.complaint_type}</b><br/>${object.descriptor || ""}<br/>${
-        object.agency
-      } · ${object.status || ""}`,
+      html: `<b>${escapeHtml(object.complaint_type)}</b><br/>${escapeHtml(
+        object.descriptor || ""
+      )}<br/>${escapeHtml(object.agency)} · ${escapeHtml(object.status || "")} · click for details`,
     };
   }
   if (layer.id === "citibike") {
     return {
-      html: `<b>${object.name}</b><br/>${object.bikes_available} bikes · ${object.docks_available} docks`,
+      html: `<b>${escapeHtml(object.name)}</b><br/>${object.bikes_available} bikes · ${
+        object.docks_available
+      } docks · click for details`,
     };
   }
   if (layer.id === "cameras") {
-    return { html: `<b>${object.name}</b><br/>${object.is_online ? "online" : "offline"}` };
+    return {
+      html: `<b>${escapeHtml(object.name)}</b><br/>${
+        object.is_online ? "online" : "offline"
+      } · click for live view`,
+    };
+  }
+  if (layer.id === "dohmh") {
+    return {
+      html: `<b>${escapeHtml(object.dba || "unnamed")}</b><br/>grade ${escapeHtml(
+        object.grade || "ungraded"
+      )} · click for details`,
+    };
   }
   return null;
+}
+
+// --------------------------------------------------------------------------- click detail panel
+//
+// One persistent panel, reused by every clickable layer (subway, 311, Citi Bike, DOT
+// cameras, restaurant inspections) instead of four bespoke UIs. `openDetailPanel` owns
+// the panel's DOM; each layer's `*Detail` function only supplies a title and a function
+// that fills in the body. That body-builder may return a cleanup function (clearing a
+// `setInterval`, cancelling a fetch) which runs when the panel is closed or replaced.
+
+let panelCleanup = null;
+
+function closeDetailPanel() {
+  if (panelCleanup) {
+    panelCleanup();
+    panelCleanup = null;
+  }
+  const panel = el("detail-panel");
+  panel.hidden = true;
+  panel.innerHTML = "";
+}
+
+function openDetailPanel(title, buildBody) {
+  closeDetailPanel(); // also clears any previous camera refresh / in-flight fetch
+  const panel = el("detail-panel");
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div class="detail-panel-head">
+      <span class="detail-panel-title">${title}</span>
+      <button type="button" class="detail-panel-close" id="detail-panel-close" aria-label="Close">×</button>
+    </div>
+    <div class="detail-panel-body" id="detail-panel-body"></div>`;
+  el("detail-panel-close").addEventListener("click", closeDetailPanel);
+  panelCleanup = buildBody(el("detail-panel-body")) || null;
+}
+
+function fieldsHtml(pairs) {
+  return `<dl class="detail-fields">${pairs
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${value}</dd>`)
+    .join("")}</dl>`;
+}
+
+function cameraDetail(camera) {
+  openDetailPanel(escapeHtml(camera.name), (body) => {
+    body.innerHTML =
+      fieldsHtml([
+        ["Status", camera.is_online ? "online" : "offline"],
+        ["Roadway", escapeHtml(camera.roadway || "—")],
+        ["Direction", escapeHtml(camera.direction || "—")],
+        ["Area", escapeHtml(camera.area || "—")],
+      ]) +
+      `<p class="detail-subhead">Live view</p>
+       <div class="camera-live">
+         <img id="camera-live-img" alt="Live view of ${escapeHtml(camera.name)}" hidden />
+         <p class="camera-live-error" id="camera-live-error" hidden>
+           Live image is unavailable right now.
+         </p>
+       </div>`;
+    const img = body.querySelector("#camera-live-img");
+    const errNode = body.querySelector("#camera-live-error");
+    img.onerror = () => {
+      img.hidden = true;
+      errNode.hidden = false;
+    };
+    const refresh = () => {
+      img.hidden = false;
+      errNode.hidden = true;
+      img.src = `${camera.image_url}?_ts=${Date.now()}`;
+    };
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
+  });
+}
+
+function inspectionDetail(record) {
+  openDetailPanel(escapeHtml(record.dba || "Unnamed restaurant"), (body) => {
+    body.innerHTML = fieldsHtml([
+      ["Cuisine", escapeHtml(record.cuisine || "—")],
+      ["Grade", escapeHtml(record.grade || "ungraded")],
+      ["Score", record.score != null ? record.score : "—"],
+      ["Inspected", record.inspection_date ? hhmmss(record.inspection_date) : "—"],
+      ["Latest violation", escapeHtml(record.violation_description || "none recorded")],
+    ]);
+  });
+}
+
+function service311Detail(record) {
+  openDetailPanel(escapeHtml(record.complaint_type || "311 request"), (body) => {
+    body.innerHTML = fieldsHtml([
+      ["Descriptor", escapeHtml(record.descriptor || "—")],
+      ["Agency", escapeHtml(record.agency || "—")],
+      ["Status", escapeHtml(record.status || "—")],
+      ["Borough", escapeHtml(record.borough || "—")],
+      ["Address", escapeHtml(record.incident_address || "—")],
+      ["Created", record.created_at ? hhmmss(record.created_at) : "—"],
+    ]);
+  });
+}
+
+function bikeDetail(record) {
+  openDetailPanel(escapeHtml(record.name), (body) => {
+    const bikes =
+      record.ebikes_available != null
+        ? `${record.bikes_available} (${record.ebikes_available} e-bikes)`
+        : `${record.bikes_available}`;
+    body.innerHTML = fieldsHtml([
+      ["Bikes", bikes],
+      ["Docks", record.docks_available],
+      ["Capacity", record.capacity != null ? record.capacity : "—"],
+      ["Renting", record.is_renting ? "yes" : "no"],
+      ["Returning", record.is_returning ? "yes" : "no"],
+      ["Last reported", record.last_reported ? hhmmss(record.last_reported) : "—"],
+    ]);
+  });
+}
+
+// Raw trip data (with the full stop_times list) and the static stop names are each
+// fetched at most once per page load and cached here, no matter how many trains get
+// clicked -- exactly the two endpoints the task already fetches elsewhere in spirit
+// (mta_subway, mta_subway_stops), just lazily, since nothing else on this page needed
+// them yet.
+let subwayTripsCache = null;
+let subwayStopsCache = null;
+
+function loadSubwayTrips() {
+  if (!subwayTripsCache) {
+    subwayTripsCache = fetch("/api/mta_subway?limit=800", { headers: { accept: "application/json" } })
+      .then((r) => r.json())
+      .then((env) => {
+        const byTripId = new Map();
+        for (const trip of env.records || []) byTripId.set(trip.trip_id, trip);
+        return byTripId;
+      })
+      .catch((err) => {
+        subwayTripsCache = null; // let the next click retry instead of caching a failure
+        throw err;
+      });
+  }
+  return subwayTripsCache;
+}
+
+function loadSubwayStops() {
+  if (!subwayStopsCache) {
+    subwayStopsCache = fetch("/api/mta_subway_stops?limit=1500", {
+      headers: { accept: "application/json" },
+    })
+      .then((r) => r.json())
+      .then((env) => {
+        const byStopId = new Map();
+        for (const stop of env.records || []) byStopId.set(stop.stop_id, stop);
+        return byStopId;
+      })
+      .catch((err) => {
+        subwayStopsCache = null;
+        throw err;
+      });
+  }
+  return subwayStopsCache;
+}
+
+function subwayDetail(record) {
+  openDetailPanel(`${escapeHtml(record.route_id)} train`, (body) => {
+    body.innerHTML =
+      fieldsHtml([
+        ["Trip", escapeHtml(record.trip_id)],
+        ["Direction", escapeHtml(record.direction || "—")],
+        [
+          "Next stop",
+          `${escapeHtml(record.stop_name || record.stop_id)} in ${Math.round(record.eta_s / 60)} min`,
+        ],
+      ]) +
+      `<p class="detail-subhead">Full stop list</p>
+       <div id="subway-stop-list" class="detail-loading">loading full stop list…</div>`;
+    const listNode = body.querySelector("#subway-stop-list");
+    let cancelled = false;
+    Promise.all([loadSubwayTrips(), loadSubwayStops()])
+      .then(([trips, stops]) => {
+        if (cancelled) return;
+        const trip = trips.get(record.trip_id);
+        if (!trip || !trip.stop_times.length) {
+          listNode.textContent = trip
+            ? "No stop times reported for this trip."
+            : "This train's raw trip data is no longer available (it may have completed its run).";
+          return;
+        }
+        listNode.innerHTML = `<ul class="detail-stop-list">${trip.stop_times
+          .map((st) => {
+            const stop = stops.get(st.stop_id);
+            const name = stop ? stop.name : st.stop_id;
+            const when = st.arrival ? hhmmss(st.arrival) : "—";
+            return `<li><span>${escapeHtml(name)}</span><span>${when}</span></li>`;
+          })
+          .join("")}</ul>`;
+      })
+      .catch((err) => {
+        if (!cancelled) listNode.textContent = `Could not load the full stop list: ${err.message}`;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+}
+
+const DETAIL_BUILDERS = {
+  subway: subwayDetail,
+  nyc311: service311Detail,
+  citibike: bikeDetail,
+  cameras: cameraDetail,
+  dohmh: inspectionDetail,
+};
+
+function handleMapClick(info) {
+  if (!info || !info.object || !info.layer) return;
+  const builder = DETAIL_BUILDERS[info.layer.id];
+  if (builder) builder(info.object);
 }
 
 // --------------------------------------------------------------------------- data
@@ -507,7 +789,12 @@ function initMap() {
       banner(`Basemap tiles unavailable (${BASEMAP_STYLE}); data layers still update.`);
     }
   });
-  overlay = new deck.MapboxOverlay({ interleaved: false, layers: [], getTooltip: tooltip });
+  overlay = new deck.MapboxOverlay({
+    interleaved: false,
+    layers: [],
+    getTooltip: tooltip,
+    onClick: handleMapClick,
+  });
   map.addControl(overlay);
 
   // Reveal the map once its first full set of tiles has actually painted, instead of
@@ -522,6 +809,9 @@ function initMap() {
 function start() {
   buildPanel();
   initMap();
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeDetailPanel();
+  });
   setConnection("connecting", "connecting…");
   refreshAll().then(connectStream);
 }
