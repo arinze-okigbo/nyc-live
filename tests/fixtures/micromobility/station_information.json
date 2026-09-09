@@ -1,0 +1,469 @@
+{
+  "data": {
+    "stations": [
+      {
+        "station_id": "1dacb0f6-29f5-4d1b-b910-92ffa5b4ca5d",
+        "name": "Eastern Pkwy & Franklin Ave (NE Corner)",
+        "short_name": "3919.07",
+        "lon": -73.9576801,
+        "lat": 40.6707767,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1dacb0f6-29f5-4d1b-b910-92ffa5b4ca5d",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "66db2a71-0aca-11e7-82f6-3863bb44ef7c",
+        "name": "Barrow St & Hudson St",
+        "short_name": "5805.05",
+        "lon": -74.00674436,
+        "lat": 40.73172428,
+        "region_id": "71",
+        "capacity": 45,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "66db2a71-0aca-11e7-82f6-3863bb44ef7c",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2124037125711300644",
+        "name": "4 Ave & 85 St",
+        "short_name": "2377.01",
+        "lon": -74.02817,
+        "lat": 40.62354,
+        "region_id": "71",
+        "capacity": 23,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2124037125711300644",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "90b141b9-c39f-4a26-a32d-08c7d1474d52",
+        "name": "Lafayette Ave & Hunts Point Ave",
+        "short_name": "7883.06",
+        "lon": -73.888161,
+        "lat": 40.816567,
+        "region_id": "71",
+        "capacity": 22,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "90b141b9-c39f-4a26-a32d-08c7d1474d52",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "1795146692060860976",
+        "name": "Longfellow Ave & Aldus St",
+        "short_name": "7983.02",
+        "lon": -73.88762910982096,
+        "lat": 40.82319448542357,
+        "region_id": "71",
+        "capacity": 24,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1795146692060860976",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "06439006-11b6-44f0-8545-c9d39035f32a",
+        "name": "Vesey St & Church St",
+        "short_name": "5216.06",
+        "lon": -74.01047229766846,
+        "lat": 40.71221958009051,
+        "region_id": "71",
+        "capacity": 78,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "06439006-11b6-44f0-8545-c9d39035f32a",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2235294222661977076",
+        "name": "Livonia Ave & Powell St",
+        "short_name": "3678.05",
+        "lon": -73.90231,
+        "lat": 40.66363,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2235294222661977076",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2235291403983301624",
+        "name": "Willmohr St & Rockaway Pkwy",
+        "short_name": "3510.06",
+        "lon": -73.91669,
+        "lat": 40.65764,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2235291403983301624",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "1986707977001495180",
+        "name": "21 St & 20 Ave",
+        "short_name": "7363.03",
+        "lon": -73.91273114065842,
+        "lat": 40.78393602019729,
+        "region_id": "71",
+        "capacity": 19,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1986707977001495180",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "66de2b2f-0aca-11e7-82f6-3863bb44ef7c",
+        "name": "3 St & Hoyt St",
+        "short_name": "4110.10",
+        "lon": -73.99364123,
+        "lat": 40.6777287,
+        "region_id": "71",
+        "capacity": 53,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "66de2b2f-0aca-11e7-82f6-3863bb44ef7c",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2126622241630343402",
+        "name": "4 Ave & 76 St",
+        "short_name": "2578.17",
+        "lon": -74.0255,
+        "lat": 40.63005,
+        "region_id": "71",
+        "capacity": 23,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2126622241630343402",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2250953816197165238",
+        "name": "New Lots Ave & Van Sinderen Ave",
+        "short_name": "3565.07",
+        "lon": -73.89915,
+        "lat": 40.65923,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2250953816197165238",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2250954679485591748",
+        "name": "Van Siclen Ave & Linden Blvd",
+        "short_name": "3661.01",
+        "lon": -73.88608,
+        "lat": 40.66085,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2250954679485591748",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "1826348248869574940",
+        "name": "E 18 St & Church Ave",
+        "short_name": "3263.01",
+        "lon": -73.96316,
+        "lat": 40.64958,
+        "region_id": "71",
+        "capacity": 31,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1826348248869574940",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "1848241791125254746",
+        "name": "51 Ave & Junction Blvd",
+        "short_name": "6113.07",
+        "lon": -73.86772,
+        "lat": 40.74087,
+        "region_id": "71",
+        "capacity": 19,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1848241791125254746",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "7a6fc75f-a605-4dd6-b567-b2bbbfb862f3",
+        "name": "65 Pl & 53 Ave",
+        "short_name": "5764.02",
+        "lon": -73.90022,
+        "lat": 40.73145,
+        "region_id": "71",
+        "capacity": 19,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "7a6fc75f-a605-4dd6-b567-b2bbbfb862f3",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "1835246937517543544",
+        "name": "24 Ave & 92 St",
+        "short_name": "6913.03",
+        "lon": -73.87789,
+        "lat": 40.76589,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1835246937517543544",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "525535e3-dde3-47b4-9c2e-0174eaa4f2bb",
+        "name": "61 St & Borden Ave",
+        "short_name": "5611.04",
+        "lon": -73.90417,
+        "lat": 40.72558,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "525535e3-dde3-47b4-9c2e-0174eaa4f2bb",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "1822663031356509142",
+        "name": "Matthews Ct & Coney Island Ave",
+        "short_name": "3034.02",
+        "lon": -73.96951,
+        "lat": 40.64235,
+        "region_id": "71",
+        "capacity": 0,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": true,
+        "station_type": "classic",
+        "external_id": "1822663031356509142",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      },
+      {
+        "station_id": "2250950615627071938",
+        "name": "Blake Ave & Schenck Ave",
+        "short_name": "3883.06",
+        "lon": -73.88738,
+        "lat": 40.669,
+        "region_id": "71",
+        "capacity": 16,
+        "rental_uris": {
+          "android": "https://bkn.lft.to/lastmile_qr_scan",
+          "ios": "https://bkn.lft.to/lastmile_qr_scan"
+        },
+        "rental_methods": [
+          "KEY",
+          "CREDITCARD"
+        ],
+        "has_kiosk": false,
+        "station_type": "classic",
+        "external_id": "2250950615627071938",
+        "electric_bike_surcharge_waiver": false,
+        "eightd_station_services": [],
+        "eightd_has_key_dispenser": false
+      }
+    ]
+  },
+  "last_updated": 1788922867,
+  "ttl": 60,
+  "version": "1.1"
+}
