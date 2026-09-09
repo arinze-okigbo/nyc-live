@@ -233,3 +233,37 @@
 .camera-live img[hidden] { display: none; }
 
 .camera-live-error { margin: 4px 0 0; }
+
+/* Hand-rolled density sparkline (person_mean / vehicle_mean over the last hour),
+   fetched once from /api/camera_density_history when the camera panel opens. */
+.density-chart-wrap { margin-top: 4px; }
+
+.density-chart {
+  display: block;
+  width: 100%;
+  height: 56px;
+}
+
+.density-chart-legend {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.density-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.density-legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.density-legend-person { background: var(--text); }
+.density-legend-vehicle { background: var(--stale); }

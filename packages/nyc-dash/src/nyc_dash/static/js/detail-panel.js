@@ -49,7 +49,7 @@ function closeDetailPanel() {
   }, DETAIL_PANEL_TRANSITION_MS);
 }
 
-function openDetailPanel(title, buildBody) {
+function openDetailPanel(title, buildBody, iconKey) {
   closeDetailPanel(); // clears any previous camera refresh / in-flight fetch
   if (panelCloseTimer) {
     // The call above just scheduled a deferred hide+clear because a previous panel was
@@ -64,6 +64,7 @@ function openDetailPanel(title, buildBody) {
   panel.classList.remove("is-open");
   panel.innerHTML = `
     <div class="detail-panel-head">
+      ${iconKey ? icon(iconKey) : ""}
       <span class="detail-panel-title">${title}</span>
       <button type="button" class="detail-panel-close" id="detail-panel-close" aria-label="Close">×</button>
     </div>
@@ -110,104 +111,191 @@ function subwaySkeletonHtml() {
 }
 
 const CAMERA_REFRESH_MS = 3000;
+const CAMERA_DENSITY_WINDOW_S = 3600;
+const DENSITY_CHART_WIDTH = 280;
+const DENSITY_CHART_HEIGHT = 56;
+const DENSITY_CHART_PADDING = 4;
+
+// One-shot fetch of an hour of aggregated person/vehicle counts for a single camera.
+// No polling: the chart reflects "the last hour as of when you opened this panel".
+function fetchCameraDensityHistory(cameraId, windowS) {
+  const url = `/api/camera_density_history?camera_id=${encodeURIComponent(cameraId)}&window_s=${windowS}`;
+  return fetch(url, { headers: { accept: "application/json" } }).then((r) => r.json());
+}
+
+// Hand-rolled sparkline: two <polyline>s (person, vehicle) plotted on a shared y-scale
+// against window_start order. No charting library -- this project doesn't have one and
+// isn't adding one for a single small trend line.
+function densityHistoryHtml(records) {
+  const w = DENSITY_CHART_WIDTH;
+  const h = DENSITY_CHART_HEIGHT;
+  const pad = DENSITY_CHART_PADDING;
+  const maxValue = Math.max(1, ...records.map((r) => Math.max(r.person_mean, r.vehicle_mean)));
+  const toPoints = (key) =>
+    records
+      .map((r, i) => {
+        const x = records.length > 1 ? pad + (i / (records.length - 1)) * (w - pad * 2) : w / 2;
+        const y = h - pad - (r[key] / maxValue) * (h - pad * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ");
+  return `<div class="density-chart-wrap">
+    <svg class="density-chart" viewBox="0 0 ${w} ${h}" role="img"
+         aria-label="Person and vehicle counts over the last hour">
+      <polyline points="${toPoints("vehicle_mean")}" fill="none" stroke="var(--stale)"
+                stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <polyline points="${toPoints("person_mean")}" fill="none" stroke="var(--text)"
+                stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>
+    <div class="density-chart-legend">
+      <span class="density-legend-item"><span class="density-legend-swatch density-legend-person"></span>person</span>
+      <span class="density-legend-item"><span class="density-legend-swatch density-legend-vehicle"></span>vehicle</span>
+    </div>
+  </div>`;
+}
 
 function cameraDetail(camera) {
-  openDetailPanel(escapeHtml(camera.name), (body) => {
-    body.innerHTML =
-      fieldsHtml([
-        ["Status", camera.is_online ? "online" : "offline"],
-        ["Roadway", escapeHtml(camera.roadway || "—")],
-        ["Direction", escapeHtml(camera.direction || "—")],
-        ["Area", escapeHtml(camera.area || "—")],
-      ]) +
-      `<p class="detail-subhead">
-         Live view
-         <span class="live-badge" id="camera-live-badge" hidden>
-           <span class="live-dot" aria-hidden="true"></span>LIVE
-         </span>
-       </p>
-       <div class="camera-live">
-         <img id="camera-live-img" alt="Live view of ${escapeHtml(camera.name)}" hidden />
-         <div class="camera-live-error" id="camera-live-error" hidden>
-           ${emptyStateHtml("📷", "Live image is unavailable right now.")}
+  openDetailPanel(
+    escapeHtml(camera.name),
+    (body) => {
+      body.innerHTML =
+        fieldsHtml([
+          ["Status", camera.is_online ? "online" : "offline"],
+          ["Roadway", escapeHtml(camera.roadway || "—")],
+          ["Direction", escapeHtml(camera.direction || "—")],
+          ["Area", escapeHtml(camera.area || "—")],
+        ]) +
+        `<p class="detail-subhead">
+           Live view
+           <span class="live-badge" id="camera-live-badge" hidden>
+             <span class="live-dot" aria-hidden="true"></span>LIVE
+           </span>
+         </p>
+         <div class="camera-live">
+           <img id="camera-live-img" alt="Live view of ${escapeHtml(camera.name)}" hidden />
+           <div class="camera-live-error" id="camera-live-error" hidden>
+             ${emptyStateHtml("📷", "Live image is unavailable right now.")}
+           </div>
          </div>
-       </div>`;
-    const img = body.querySelector("#camera-live-img");
-    const errNode = body.querySelector("#camera-live-error");
-    const liveBadge = body.querySelector("#camera-live-badge");
-    img.onerror = () => {
-      img.hidden = true;
-      errNode.hidden = false;
-      liveBadge.hidden = true;
-    };
-    const refresh = () => {
-      img.hidden = false;
-      errNode.hidden = true;
-      liveBadge.hidden = false;
-      img.src = `${camera.image_url}?_ts=${Date.now()}`;
-    };
-    refresh();
-    let timer = setInterval(refresh, CAMERA_REFRESH_MS);
-    // Good-network-citizen behavior: nyctmc.org does not rate-limit this endpoint
-    // itself, so a hidden background tab still polling every 3s is wasted load with
-    // no one watching. Pause while hidden, refresh immediately on return so the image
-    // isn't stale the moment the user looks back.
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
+         <p class="detail-subhead">${icon("chart")} Density (last hour)</p>
+         <div id="camera-density-history" class="detail-loading" aria-busy="true" aria-live="polite">
+           <span class="detail-sr-only">Loading density history…</span>
+         </div>`;
+      const img = body.querySelector("#camera-live-img");
+      const errNode = body.querySelector("#camera-live-error");
+      const liveBadge = body.querySelector("#camera-live-badge");
+      img.onerror = () => {
+        img.hidden = true;
+        errNode.hidden = false;
+        liveBadge.hidden = true;
+      };
+      const refresh = () => {
+        img.hidden = false;
+        errNode.hidden = true;
+        liveBadge.hidden = false;
+        img.src = `${camera.image_url}?_ts=${Date.now()}`;
+      };
+      refresh();
+      let timer = setInterval(refresh, CAMERA_REFRESH_MS);
+      // Good-network-citizen behavior: nyctmc.org does not rate-limit this endpoint
+      // itself, so a hidden background tab still polling every 3s is wasted load with
+      // no one watching. Pause while hidden, refresh immediately on return so the image
+      // isn't stale the moment the user looks back.
+      const onVisibilityChange = () => {
+        if (document.visibilityState === "hidden") {
+          clearInterval(timer);
+        } else {
+          refresh();
+          timer = setInterval(refresh, CAMERA_REFRESH_MS);
+        }
+      };
+      document.addEventListener("visibilitychange", onVisibilityChange);
+
+      const chartNode = body.querySelector("#camera-density-history");
+      let chartCancelled = false;
+      fetchCameraDensityHistory(camera.id, CAMERA_DENSITY_WINDOW_S)
+        .then((env) => {
+          if (chartCancelled) return;
+          chartNode.removeAttribute("aria-busy");
+          if (env.status === "error" || !env.records.length) {
+            const message =
+              (env.error && env.error.message) || "No density data for this camera yet.";
+            chartNode.innerHTML = emptyStateHtml(icon("chart"), message);
+            return;
+          }
+          chartNode.innerHTML = densityHistoryHtml(env.records);
+        })
+        .catch((err) => {
+          if (chartCancelled) return;
+          chartNode.removeAttribute("aria-busy");
+          chartNode.innerHTML = emptyStateHtml(
+            icon("alert"),
+            `Could not load density history: ${err.message}`
+          );
+        });
+
+      return () => {
+        chartCancelled = true;
         clearInterval(timer);
-      } else {
-        refresh();
-        timer = setInterval(refresh, CAMERA_REFRESH_MS);
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  });
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      };
+    },
+    "dot_cameras"
+  );
 }
 
 function inspectionDetail(record) {
-  openDetailPanel(escapeHtml(record.dba || "Unnamed restaurant"), (body) => {
-    body.innerHTML = fieldsHtml([
-      ["Cuisine", escapeHtml(record.cuisine || "—")],
-      ["Grade", escapeHtml(record.grade || "ungraded")],
-      ["Score", record.score != null ? record.score : "—"],
-      ["Inspected", record.inspection_date ? hhmmss(record.inspection_date) : "—"],
-      ["Latest violation", escapeHtml(record.violation_description || "none recorded")],
-    ]);
-  });
+  openDetailPanel(
+    escapeHtml(record.dba || "Unnamed restaurant"),
+    (body) => {
+      body.innerHTML = fieldsHtml([
+        ["Cuisine", escapeHtml(record.cuisine || "—")],
+        ["Grade", escapeHtml(record.grade || "ungraded")],
+        ["Score", record.score != null ? record.score : "—"],
+        ["Inspected", record.inspection_date ? hhmmss(record.inspection_date) : "—"],
+        ["Latest violation", escapeHtml(record.violation_description || "none recorded")],
+      ]);
+    },
+    "dohmh_inspections"
+  );
 }
 
 function service311Detail(record) {
-  openDetailPanel(escapeHtml(record.complaint_type || "311 request"), (body) => {
-    body.innerHTML = fieldsHtml([
-      ["Descriptor", escapeHtml(record.descriptor || "—")],
-      ["Agency", escapeHtml(record.agency || "—")],
-      ["Status", escapeHtml(record.status || "—")],
-      ["Borough", escapeHtml(record.borough || "—")],
-      ["Address", escapeHtml(record.incident_address || "—")],
-      ["Created", record.created_at ? hhmmss(record.created_at) : "—"],
-    ]);
-  });
+  openDetailPanel(
+    escapeHtml(record.complaint_type || "311 request"),
+    (body) => {
+      body.innerHTML = fieldsHtml([
+        ["Descriptor", escapeHtml(record.descriptor || "—")],
+        ["Agency", escapeHtml(record.agency || "—")],
+        ["Status", escapeHtml(record.status || "—")],
+        ["Borough", escapeHtml(record.borough || "—")],
+        ["Address", escapeHtml(record.incident_address || "—")],
+        ["Created", record.created_at ? hhmmss(record.created_at) : "—"],
+      ]);
+    },
+    "nyc_311"
+  );
 }
 
 function bikeDetail(record) {
-  openDetailPanel(escapeHtml(record.name), (body) => {
-    const bikes =
-      record.ebikes_available != null
-        ? `${record.bikes_available} (${record.ebikes_available} e-bikes)`
-        : `${record.bikes_available}`;
-    body.innerHTML = fieldsHtml([
-      ["Bikes", bikes],
-      ["Docks", record.docks_available],
-      ["Capacity", record.capacity != null ? record.capacity : "—"],
-      ["Renting", record.is_renting ? "yes" : "no"],
-      ["Returning", record.is_returning ? "yes" : "no"],
-      ["Last reported", record.last_reported ? hhmmss(record.last_reported) : "—"],
-    ]);
-  });
+  openDetailPanel(
+    escapeHtml(record.name),
+    (body) => {
+      const bikes =
+        record.ebikes_available != null
+          ? `${record.bikes_available} (${record.ebikes_available} e-bikes)`
+          : `${record.bikes_available}`;
+      body.innerHTML = fieldsHtml([
+        ["Bikes", bikes],
+        ["Docks", record.docks_available],
+        ["Capacity", record.capacity != null ? record.capacity : "—"],
+        ["Renting", record.is_renting ? "yes" : "no"],
+        ["Returning", record.is_returning ? "yes" : "no"],
+        ["Last reported", record.last_reported ? hhmmss(record.last_reported) : "—"],
+      ]);
+    },
+    "citibike"
+  );
 }
 
 // Raw trip data (with the full stop_times list) and the static stop names are each
@@ -255,55 +343,59 @@ function loadSubwayStops() {
 }
 
 function subwayDetail(record) {
-  openDetailPanel(`${escapeHtml(record.route_id)} train`, (body) => {
-    body.innerHTML =
-      fieldsHtml([
-        ["Trip", escapeHtml(record.trip_id)],
-        ["Direction", escapeHtml(record.direction || "—")],
-        [
-          "Next stop",
-          `${escapeHtml(record.stop_name || record.stop_id)} in ${Math.round(record.eta_s / 60)} min`,
-        ],
-      ]) +
-      `<p class="detail-subhead">Full stop list</p>
-       <div id="subway-stop-list" class="detail-loading" aria-busy="true" aria-live="polite">
-         ${subwaySkeletonHtml()}
-         <span class="detail-sr-only">Loading full stop list…</span>
-       </div>`;
-    const listNode = body.querySelector("#subway-stop-list");
-    let cancelled = false;
-    Promise.all([loadSubwayTrips(), loadSubwayStops()])
-      .then(([trips, stops]) => {
-        if (cancelled) return;
-        listNode.removeAttribute("aria-busy");
-        const trip = trips.get(record.trip_id);
-        if (!trip || !trip.stop_times.length) {
-          listNode.innerHTML = emptyStateHtml(
-            "🚇",
-            trip
-              ? "No stop times reported for this trip."
-              : "This train's raw trip data is no longer available (it may have completed its run)."
-          );
-          return;
-        }
-        listNode.innerHTML = `<ul class="detail-stop-list">${trip.stop_times
-          .map((st) => {
-            const stop = stops.get(st.stop_id);
-            const name = stop ? stop.name : st.stop_id;
-            const when = st.arrival ? hhmmss(st.arrival) : "—";
-            return `<li><span>${escapeHtml(name)}</span><span>${when}</span></li>`;
-          })
-          .join("")}</ul>`;
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        listNode.removeAttribute("aria-busy");
-        listNode.innerHTML = emptyStateHtml("⚠️", `Could not load the full stop list: ${err.message}`);
-      });
-    return () => {
-      cancelled = true;
-    };
-  });
+  openDetailPanel(
+    `${escapeHtml(record.route_id)} train`,
+    (body) => {
+      body.innerHTML =
+        fieldsHtml([
+          ["Trip", escapeHtml(record.trip_id)],
+          ["Direction", escapeHtml(record.direction || "—")],
+          [
+            "Next stop",
+            `${escapeHtml(record.stop_name || record.stop_id)} in ${Math.round(record.eta_s / 60)} min`,
+          ],
+        ]) +
+        `<p class="detail-subhead">Full stop list</p>
+         <div id="subway-stop-list" class="detail-loading" aria-busy="true" aria-live="polite">
+           ${subwaySkeletonHtml()}
+           <span class="detail-sr-only">Loading full stop list…</span>
+         </div>`;
+      const listNode = body.querySelector("#subway-stop-list");
+      let cancelled = false;
+      Promise.all([loadSubwayTrips(), loadSubwayStops()])
+        .then(([trips, stops]) => {
+          if (cancelled) return;
+          listNode.removeAttribute("aria-busy");
+          const trip = trips.get(record.trip_id);
+          if (!trip || !trip.stop_times.length) {
+            listNode.innerHTML = emptyStateHtml(
+              "🚇",
+              trip
+                ? "No stop times reported for this trip."
+                : "This train's raw trip data is no longer available (it may have completed its run)."
+            );
+            return;
+          }
+          listNode.innerHTML = `<ul class="detail-stop-list">${trip.stop_times
+            .map((st) => {
+              const stop = stops.get(st.stop_id);
+              const name = stop ? stop.name : st.stop_id;
+              const when = st.arrival ? hhmmss(st.arrival) : "—";
+              return `<li><span>${escapeHtml(name)}</span><span>${when}</span></li>`;
+            })
+            .join("")}</ul>`;
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          listNode.removeAttribute("aria-busy");
+          listNode.innerHTML = emptyStateHtml("⚠️", `Could not load the full stop list: ${err.message}`);
+        });
+      return () => {
+        cancelled = true;
+      };
+    },
+    "subway"
+  );
 }
 
 const DETAIL_BUILDERS = {
