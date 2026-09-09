@@ -404,6 +404,16 @@ class BusVehicle(Located):
     trip_id: str | None
     bearing: float | None = None
     timestamp: AwareDatetime | None = None
+    # SIRI MonitoredCall / Occupancy fields, present on ~99.9% of live vehicle activities
+    # (verified live 2026-09-08) but absent on the ~0.1% not currently monitored -- all
+    # optional, all None-defaulted, single existing consumer (dash's generic pass-through
+    # route), so this is additive only.
+    next_stop_id: str | None = None
+    next_stop_name: str | None = None
+    next_stop_eta: AwareDatetime | None = None
+    next_stop_distance_m: float | None = None
+    stops_away: int | None = None
+    occupancy: str | None = None
 
 
 # ---------------------------------------------------------------------------

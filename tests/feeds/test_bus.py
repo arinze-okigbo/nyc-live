@@ -69,6 +69,8 @@ def _activity(
     bearing: float | None = 45.5,
     trip_ref: str | None = "MTA NYCT_FP_D6-Weekday-128100_B54_615",
     recorded_at: str | None = "2026-09-08T22:03:27.000-04:00",
+    monitored_call: dict[str, object] | bool = False,
+    occupancy: str | None = None,
 ) -> dict[str, object]:
     mvj: dict[str, object] = {
         "VehicleRef": vehicle_ref,
@@ -80,6 +82,12 @@ def _activity(
         mvj["Bearing"] = bearing
     if trip_ref is not None:
         mvj["FramedVehicleJourneyRef"] = {"DatedVehicleJourneyRef": trip_ref}
+    # monitored_call: False (default) omits the key entirely (existing tests' shape);
+    # a dict supplies MonitoredCall explicitly.
+    if monitored_call is not False:
+        mvj["MonitoredCall"] = monitored_call
+    if occupancy is not None:
+        mvj["Occupancy"] = occupancy
     activity: dict[str, object] = {"MonitoredVehicleJourney": mvj}
     if recorded_at is not None:
         activity["RecordedAtTime"] = recorded_at
@@ -190,6 +198,102 @@ async def test_bus_configured_path_maps_real_shape_and_drops_bad_rows(
     assert minimal.trip_id is None and minimal.bearing is None
 
     assert snap.upstream_generated_at is not None
+
+
+async def test_bus_maps_monitored_call_and_occupancy_when_present(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """Full MonitoredCall + Occupancy shape (verified live 2026-09-08) maps to all six
+    new BusVehicle fields."""
+    base = "http://127.0.0.1:9/siri"
+    settings = _settings(tmp_path, FAKE_KEY, base=base)
+    url = "http://127.0.0.1:9/siri/vehicle-monitoring.json"
+    body = _delivery(
+        _activity(
+            vehicle_ref="MTA NYCT_7516",
+            monitored_call={
+                "StopPointRef": "MTA_308230",
+                "StopPointName": ["E 42 St/Park Ave"],
+                "ExpectedArrivalTime": "2026-09-08T22:06:12.000-04:00",
+                "AimedArrivalTime": "2026-09-08T22:05:00.000-04:00",
+                "DistanceFromStop": 412.7,
+                "NumberOfStopsAway": 2,
+            },
+            occupancy="manySeatsAvailable",
+        ),
+    )
+    respx_mock.get(url, params={"key": FAKE_KEY, "version": "2"}).mock(
+        return_value=httpx.Response(200, json=body)
+    )
+    async with make_client(settings) as client:
+        adapter = BusPositionsAdapter(client=client, settings=settings)
+        snap = await adapter.fetch()
+
+    vehicle = snap.records[0]
+    assert vehicle.next_stop_id == "MTA_308230"
+    assert vehicle.next_stop_name == "E 42 St/Park Ave"
+    assert vehicle.next_stop_eta is not None
+    assert vehicle.next_stop_eta.isoformat() == "2026-09-08T22:06:12-04:00"
+    assert vehicle.next_stop_distance_m == 412.7
+    assert vehicle.stops_away == 2
+    assert vehicle.occupancy == "manySeatsAvailable"
+
+
+async def test_bus_monitored_call_eta_falls_back_to_aimed_arrival_time(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """ExpectedArrivalTime is absent on some calls; AimedArrivalTime is the fallback."""
+    base = "http://127.0.0.1:9/siri"
+    settings = _settings(tmp_path, FAKE_KEY, base=base)
+    url = "http://127.0.0.1:9/siri/vehicle-monitoring.json"
+    body = _delivery(
+        _activity(
+            vehicle_ref="MTA NYCT_7516",
+            monitored_call={
+                "StopPointRef": "MTA_308230",
+                "StopPointName": ["E 42 St/Park Ave"],
+                "AimedArrivalTime": "2026-09-08T22:05:00.000-04:00",
+                "DistanceFromStop": 412.7,
+                "NumberOfStopsAway": 2,
+            },
+        ),
+    )
+    respx_mock.get(url, params={"key": FAKE_KEY, "version": "2"}).mock(
+        return_value=httpx.Response(200, json=body)
+    )
+    async with make_client(settings) as client:
+        adapter = BusPositionsAdapter(client=client, settings=settings)
+        snap = await adapter.fetch()
+
+    vehicle = snap.records[0]
+    assert vehicle.next_stop_eta is not None
+    assert vehicle.next_stop_eta.isoformat() == "2026-09-08T22:05:00-04:00"
+
+
+async def test_bus_missing_monitored_call_maps_new_fields_as_none(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """A vehicle with no MonitoredCall (the ~0.1% observed live) must still map
+    successfully, with all six new fields left None -- same behavior as trip_id/bearing
+    when absent."""
+    base = "http://127.0.0.1:9/siri"
+    settings = _settings(tmp_path, FAKE_KEY, base=base)
+    url = "http://127.0.0.1:9/siri/vehicle-monitoring.json"
+    body = _delivery(_activity(vehicle_ref="MTA NYCT_9001"))  # monitored_call omitted
+    respx_mock.get(url, params={"key": FAKE_KEY, "version": "2"}).mock(
+        return_value=httpx.Response(200, json=body)
+    )
+    async with make_client(settings) as client:
+        adapter = BusPositionsAdapter(client=client, settings=settings)
+        snap = await adapter.fetch()
+
+    vehicle = snap.records[0]
+    assert vehicle.next_stop_id is None
+    assert vehicle.next_stop_name is None
+    assert vehicle.next_stop_eta is None
+    assert vehicle.next_stop_distance_m is None
+    assert vehicle.stops_away is None
+    assert vehicle.occupancy is None
 
 
 async def test_bus_all_rows_dropped_is_an_upstream_fault(

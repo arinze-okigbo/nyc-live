@@ -17,7 +17,12 @@ Response shape (verified live, not invented):
     stripped, since no contract or consumer here specifies the bare GTFS form),
     ``VehicleLocation.{Latitude,Longitude}``, optional ``Bearing``, and
     ``FramedVehicleJourneyRef.DatedVehicleJourneyRef`` (trip id; absent on some
-    vehicles, in which case ``trip_id`` is left ``None``).
+    vehicles, in which case ``trip_id`` is left ``None``), ``MonitoredCall``
+    (``StopPointRef``, ``StopPointName[0]``, ``ExpectedArrivalTime`` falling back to
+    ``AimedArrivalTime``, ``DistanceFromStop``, ``NumberOfStopsAway`` -- present on
+    ~99.9% of live vehicle activities, verified live 2026-09-08, absent on vehicles not
+    currently monitored, in which case the six mapped fields are left ``None``), and
+    ``Occupancy`` (a free-text string, e.g. ``"manySeatsAvailable"``).
 
 An invalid key does not fail the HTTP request (still 200); MTA embeds the failure as
 ``VehicleMonitoringDelivery[].ErrorCondition`` instead, which is checked explicitly and
@@ -89,6 +94,45 @@ class _ParseStats:
     dropped_out_of_bbox: int = 0
 
 
+def _map_monitored_call(mvj: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract the six optional ``MonitoredCall`` / ``Occupancy`` fields from a
+    ``MonitoredVehicleJourney`` mapping. Defensive throughout: ``MonitoredCall`` is
+    absent on ~0.1% of live vehicle activities (verified live 2026-09-08), and every
+    sub-field within it is independently optional.
+    """
+    occupancy = mvj.get("Occupancy") or None
+    call = mvj.get("MonitoredCall")
+    if not isinstance(call, Mapping):
+        return {
+            "next_stop_id": None,
+            "next_stop_name": None,
+            "next_stop_eta": None,
+            "next_stop_distance_m": None,
+            "stops_away": None,
+            "occupancy": occupancy,
+        }
+
+    stop_id = call.get("StopPointRef")
+    stop_names = call.get("StopPointName")
+    stop_name = (
+        stop_names[0]
+        if isinstance(stop_names, list) and stop_names and isinstance(stop_names[0], str)
+        else None
+    )
+    eta = _parse_recorded_at(call.get("ExpectedArrivalTime") or call.get("AimedArrivalTime"))
+    distance = call.get("DistanceFromStop")
+    stops_away = call.get("NumberOfStopsAway")
+
+    return {
+        "next_stop_id": str(stop_id) if stop_id else None,
+        "next_stop_name": stop_name,
+        "next_stop_eta": eta,
+        "next_stop_distance_m": float(distance) if isinstance(distance, int | float) else None,
+        "stops_away": int(stops_away) if isinstance(stops_away, int | float) else None,
+        "occupancy": occupancy,
+    }
+
+
 def _map_vehicle(activity: Mapping[str, Any]) -> BusVehicle | None:
     mvj = activity.get("MonitoredVehicleJourney")
     if not isinstance(mvj, Mapping):
@@ -112,6 +156,7 @@ def _map_vehicle(activity: Mapping[str, Any]) -> BusVehicle | None:
         trip_id=str(trip_id) if trip_id else None,
         bearing=float(bearing) if isinstance(bearing, int | float) else None,
         timestamp=_parse_recorded_at(activity.get("RecordedAtTime")),
+        **_map_monitored_call(mvj),
     )
 
 
