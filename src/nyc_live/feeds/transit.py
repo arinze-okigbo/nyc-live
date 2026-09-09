@@ -1,13 +1,18 @@
 """MTA subway adapters: GTFS-realtime trips, GTFS-realtime alerts, static GTFS stops.
 
-Upstreams (no API key required)
--------------------------------
+Upstreams (no API key required, per api.mta.info: "Accounts and API keys are no
+longer required to access these feeds")
+-------------------------------------------------------------------------------
 * Trips (trip updates + vehicle positions), one protobuf feed per line group:
-  ``{settings.mta_gtfs_base}/nyct/{slug}`` for every slug in ``SUBWAY_FEED_SLUGS``.
+  ``{settings.mta_gtfs_base}/nyct%2F{slug}`` for every slug in ``SUBWAY_FEED_SLUGS``.
+  The ``%2F`` is part of the path and is sent verbatim (one URL-encoded path segment,
+  not ``nyct/{slug}``) — api.mta.info's own copy-paste feed URLs use this form, and an
+  unescaped slash there gets API Gateway's misleading ``403 Missing Authentication
+  Token`` (its generic response for an unmatched route, not an auth failure).
   Slugs are verified at runtime: a 404 on any slug raises ``FeedUnavailable`` with
   ``ErrorKind.NOT_FOUND`` naming the slug. A failed slug never yields an empty snapshot.
-* Alerts: ``{settings.mta_gtfs_base}/camsys%2Fsubway-alerts`` (different prefix; the
-  ``%2F`` is part of the path and is sent verbatim).
+* Alerts: ``{settings.mta_gtfs_base}/camsys%2Fsubway-alerts`` (different prefix; same
+  verbatim ``%2F`` convention as trips).
 * Static GTFS (stops): ``settings.mta_static_gtfs_url``, which defaults to
   ``STATIC_GTFS_URL`` = ``https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip``
   (verified 2026-09-08: HTTP 200, ``application/zip``, ~5.6 MB, ``stops.txt`` has ~1490
@@ -101,7 +106,7 @@ _STOPS_REQUIRED_COLUMNS = ("stop_id", "stop_name", "stop_lat", "stop_lon")
 
 
 def subway_feed_url(base: str, slug: str) -> str:
-    return f"{base.rstrip('/')}/nyct/{slug}"
+    return f"{base.rstrip('/')}/nyct%2F{slug}"
 
 
 def alerts_url(base: str) -> str:

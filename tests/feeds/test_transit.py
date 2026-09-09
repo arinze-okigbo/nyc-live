@@ -242,7 +242,7 @@ async def test_trips_parsing_synthetic_feed(
     assert len(snap.records) == 2
     assert snap.stale_after == snap.fetched_at + DEFAULT_TTL[FeedName.MTA_SUBWAY]
     assert snap.upstream_generated_at == datetime.fromtimestamp(1_757_300_000, UTC)
-    assert snap.source_url.endswith("/nyct/{" + ",".join(SUBWAY_FEED_SLUGS) + "}")
+    assert snap.source_url.endswith("/nyct%2F{" + ",".join(SUBWAY_FEED_SLUGS) + "}")
 
     one, shuttle = snap.records
     assert one.trip_id == "063000_1..S03R" and one.route_id == "1" and one.feed_slug == "gtfs"
