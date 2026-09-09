@@ -103,7 +103,7 @@ def test_health_endpoint_reports_every_feed(client: TestClient) -> None:
     assert body["store"]["open"] is True
     assert body["store"]["read_only"] is True, "the dashboard must open DuckDB read-only"
     feeds = {f["feed"]: f for f in body["feeds"]}
-    assert len(feeds) == 10, sorted(feeds)
+    assert len(feeds) == 11, sorted(feeds)
     assert feeds[FeedName.MTA_BUS.value]["configured"] is False
     assert feeds[FeedName.NY511_CAMERAS.value]["configured"] is False
     for entry in body["feeds"]:

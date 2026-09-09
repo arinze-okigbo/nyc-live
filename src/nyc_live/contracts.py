@@ -51,6 +51,9 @@ class FeedName(StrEnum):
     MTA_SUBWAY = "mta_subway"  # trip updates + vehicle positions, all NYCT feeds merged
     MTA_SUBWAY_ALERTS = "mta_subway_alerts"
     MTA_SUBWAY_STOPS = "mta_subway_stops"  # static GTFS stops, needed to place trains on a map
+    MTA_SUBWAY_SHAPES = (
+        "mta_subway_shapes"  # static GTFS route polylines, for drawing lines on a map
+    )
     CITIBIKE = "citibike"
     NYC_311 = "nyc_311"
     DOHMH_INSPECTIONS = "dohmh_inspections"
@@ -67,6 +70,7 @@ DEFAULT_TTL: dict[FeedName, timedelta] = {
     FeedName.MTA_SUBWAY: timedelta(seconds=30),
     FeedName.MTA_SUBWAY_ALERTS: timedelta(seconds=60),
     FeedName.MTA_SUBWAY_STOPS: timedelta(hours=24),
+    FeedName.MTA_SUBWAY_SHAPES: timedelta(hours=24),  # same static bundle/cadence as stops
     FeedName.CITIBIKE: timedelta(seconds=60),
     FeedName.NYC_311: timedelta(minutes=5),
     FeedName.DOHMH_INSPECTIONS: timedelta(hours=6),
@@ -364,6 +368,23 @@ class SubwayStop(Located):
     name: str
     parent_station: str | None = None
     routes: list[str] = Field(default_factory=list)
+
+
+class SubwayRouteShape(StrictModel):
+    """One physical path a subway route's trains travel, from static GTFS shapes.txt.
+
+    A route has MANY shapes (branches, express/local segments, direction) -- every
+    NYCT route in the live bundle has multiple, from 2 up to 35 -- so this is keyed by
+    shape_id, the natural GTFS key, with route_id kept as a join for grouping/filtering.
+    Never assume one shape per route.
+    """
+
+    shape_id: str
+    route_id: str
+    direction: SubwayDirection | None = None
+    points: list[tuple[float, float]] = Field(
+        min_length=2
+    )  # (lat, lon), ordered by shape_pt_sequence
 
 
 class SubwayAlert(StrictModel):

@@ -242,7 +242,7 @@ async def test_feed_health_covers_every_registered_feed(mcp: Client) -> None:
     assert isinstance(health, dict)
     assert set(health) == {"checked_at", "store", "feeds"}
     feeds = {f["feed"]: f for f in health["feeds"]}
-    assert len(feeds) == 10, sorted(feeds)
+    assert len(feeds) == 11, sorted(feeds)
     for name, entry in feeds.items():
         assert set(entry) == {
             "feed",

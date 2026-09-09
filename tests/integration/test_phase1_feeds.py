@@ -112,7 +112,7 @@ async def test_registry_loads_every_registered_adapter(
     svc = build_services(integration_settings, open_store=False, strict=True)
     try:
         assert set(svc.registry.names()) == REGISTERED_FEEDS
-        assert len(svc.registry.names()) == len(ADAPTER_SPECS) == 10
+        assert len(svc.registry.names()) == len(ADAPTER_SPECS) == 11
         assert hasattr(svc.frames, "get_frame")
     finally:
         await svc.aclose()

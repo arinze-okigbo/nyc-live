@@ -50,6 +50,12 @@ ADAPTER_SPECS: tuple[AdapterSpec, ...] = (
     AdapterSpec(
         "nyc_live.feeds.transit", "SubwayStopsAdapter", FeedName.MTA_SUBWAY_STOPS, "feed-transit"
     ),
+    AdapterSpec(
+        "nyc_live.feeds.transit",
+        "SubwayShapesAdapter",
+        FeedName.MTA_SUBWAY_SHAPES,
+        "feed-transit",
+    ),
     AdapterSpec("nyc_live.feeds.bus", "BusPositionsAdapter", FeedName.MTA_BUS, "feed-transit"),
     AdapterSpec(
         "nyc_live.feeds.micromobility", "CitiBikeAdapter", FeedName.CITIBIKE, "feed-micromobility"

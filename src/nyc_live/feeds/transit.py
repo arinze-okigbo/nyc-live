@@ -75,6 +75,7 @@ from nyc_live.contracts import (
     StopTimeUpdate,
     SubwayAlert,
     SubwayDirection,
+    SubwayRouteShape,
     SubwayStop,
     SubwayTrip,
     VehiclePosition,
@@ -716,4 +717,36 @@ class SubwayStopsAdapter(_BaseAdapter):
             records=parsed.stops,
             upstream_generated_at=raw.last_modified,
             latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        )
+
+
+class SubwayShapesAdapter(_BaseAdapter):
+    """Static GTFS ``shapes.txt`` route polylines -- stub, not yet implemented.
+
+    Investigated 2026-09-09: the real bundle has shapes.txt (257 shape_ids, 29 routes,
+    150,744 points, ~164 KB gzipped) joined to routes via trips.txt's shape_id column.
+    Every NYCT route has MULTIPLE shapes (branches, express/local, direction) -- 2 to 35
+    per route -- so this must be keyed by shape_id, never a flat {route_id: polyline}.
+    See SubwayRouteShape in contracts.py for the frozen shape this will return.
+
+    Registered in the adapter registry (feeds/__init__.py) ahead of the real
+    implementation landing, so the registry entry and this stub ship together rather
+    than the registry referencing a class that doesn't exist yet -- same bootstrapping
+    order used for the original mta_bus stub.
+    """
+
+    name = FeedName.MTA_SUBWAY_SHAPES
+    ttl = DEFAULT_TTL[FeedName.MTA_SUBWAY_SHAPES]
+
+    @property
+    def source_url(self) -> str:
+        return self.settings.mta_static_gtfs_url
+
+    async def fetch(self) -> Snapshot[SubwayRouteShape]:
+        raise FeedUnavailable(
+            self.name,
+            "shapes.txt parsing is not implemented yet (investigated, not built -- "
+            "see the class docstring)",
+            kind=ErrorKind.INTERNAL,
+            url=self.source_url,
         )
