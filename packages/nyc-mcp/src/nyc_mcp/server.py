@@ -84,6 +84,7 @@ TOOL_NAMES: tuple[str, ...] = (
     "feed_health",
     "density_now",
     "density_history",
+    "camera_density_history",
 )
 
 
@@ -511,6 +512,37 @@ def _register_store_tools(mcp: FastMCP, state: _State) -> None:
             camera_id=camera_id,
             window=timedelta(hours=max(hours, 0.01)),
             bucket=timedelta(seconds=max(bucket_s, 1)),
+            limit=limit,
+            cameras=camera_fallback(),
+        )
+        return _dump(env)
+
+    @mcp.tool
+    async def camera_density_history(
+        *,
+        camera_id: str,
+        since_s: int = 3600,
+        bucket_s: int | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        """Density trend for one camera, ready for a trend chart (Envelope[CameraDensity]).
+
+        One record per time bucket over the trailing `since_s` seconds (default 1 hour)
+        for `camera_id`, each with `person_mean`, `vehicle_mean`, `person_max`,
+        `vehicle_max` (counts per frame), `sample_count` (frames), `window_start`,
+        `window_end`, and `latest_ts`. Bucket size defaults to roughly `since_s / 120`
+        (minimum 30 s) so a chart gets about 120 points; pass `bucket_s` to override.
+        This is `density_history` narrowed to one required camera with chart-friendly
+        bucketing; use `density_history` directly for multi-camera or geo-filtered
+        queries. `status="error"`, `error.kind="not_configured"` until nyc-vision has
+        written `density_samples` for this camera; `error.kind="internal"` means
+        `camera_id` was empty or the DuckDB file could not be opened.
+        """
+        env = svc_api.camera_density_history(
+            state.get().store,
+            camera_id,
+            since_s=max(since_s, 1),
+            bucket_s=bucket_s,
             limit=limit,
             cameras=camera_fallback(),
         )

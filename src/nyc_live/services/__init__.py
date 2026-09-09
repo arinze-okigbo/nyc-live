@@ -5,7 +5,7 @@ directly; feeds are read through `FeedRegistry` / `CachedFeed` only.
 """
 
 from nyc_live.services.cameras import camera_frame, nearest_camera, persist_frame_telemetry
-from nyc_live.services.density import density_history, density_now
+from nyc_live.services.density import camera_density_history, density_history, density_now
 from nyc_live.services.nearby import geo_query, nearby
 from nyc_live.services.registry import (
     Services,
@@ -22,6 +22,7 @@ __all__ = [
     "alerts_near",
     "build_registry",
     "build_services",
+    "camera_density_history",
     "camera_frame",
     "density_history",
     "density_now",

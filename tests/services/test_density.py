@@ -16,7 +16,7 @@ from nyc_live.contracts import (
     FeedName,
     GeoQuery,
 )
-from nyc_live.services.density import density_history, density_now
+from nyc_live.services.density import camera_density_history, density_history, density_now
 from nyc_live.store import Store
 
 T0 = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
@@ -151,3 +151,44 @@ def test_density_history_rejects_non_positive_bucket(store: Store) -> None:
     env = density_history(store, bucket=timedelta(0))
     assert env.status == "error" and env.error is not None
     assert env.error.kind == ErrorKind.INTERNAL
+
+
+# --------------------------------------------------------------------------- camera_density_history
+
+
+def test_camera_density_history_requires_camera_id(store: Store) -> None:
+    env = camera_density_history(store, "", now=NOW)
+    assert env.status == "error" and env.error is not None
+    assert env.error.kind == ErrorKind.INTERNAL
+    assert "camera_id" in env.error.message
+
+
+def test_camera_density_history_rejects_non_positive_since_s(store: Store) -> None:
+    env = camera_density_history(store, "cam1", since_s=0, now=NOW)
+    assert env.status == "error" and env.error is not None
+    assert env.error.kind == ErrorKind.INTERNAL
+    assert "since_s" in env.error.message
+
+
+def test_camera_density_history_defaults_to_adaptive_bucket(store: Store) -> None:
+    seed(store)
+    env = camera_density_history(store, "cam1", since_s=600, now=NOW)
+    assert env.status == "fresh"
+    assert all(r.camera_id == "cam1" for r in env.records)
+    # since_s=600 / 120 target points == 5 s, floored to the 30 s minimum bucket
+    assert env.records[0].window_end - env.records[0].window_start <= timedelta(seconds=30)
+
+
+def test_camera_density_history_matches_density_history_for_one_camera(store: Store) -> None:
+    seed(store)
+    explicit = density_history(
+        store, camera_id="cam1", window=timedelta(minutes=10), bucket=timedelta(minutes=5), now=NOW
+    )
+    via_wrapper = camera_density_history(store, "cam1", since_s=600, bucket_s=300, now=NOW)
+    assert via_wrapper.records == explicit.records
+
+
+def test_camera_density_history_no_samples_is_not_configured_error(store: Store) -> None:
+    env = camera_density_history(store, "cam1", now=NOW)
+    assert env.status == "error" and env.error is not None
+    assert env.error.kind == ErrorKind.NOT_CONFIGURED

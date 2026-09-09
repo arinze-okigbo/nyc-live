@@ -73,6 +73,7 @@ async def test_every_tool_is_listed_with_llm_facing_docs(mcp: Client) -> None:
         ("query_warehouse", {"sql": "SELECT 1 AS one"}, "warehouse"),
         ("density_now", {}, "density"),
         ("density_history", {}, "density"),
+        ("camera_density_history", {"camera_id": "cam1"}, "density"),
     ],
 )
 async def test_data_tools_return_envelopes(
@@ -306,6 +307,18 @@ async def test_density_tools_are_not_configured_until_vision_runs(mcp: Client) -
         assert env["error"]["kind"] == "not_configured"
         assert "nyc-vision" in env["error"]["message"]
         assert env["records"] == []
+    env = await call(mcp, "camera_density_history", camera_id="cam1")
+    assert env["status"] == "error"
+    assert env["error"]["kind"] == "not_configured"
+    assert "nyc-vision" in env["error"]["message"]
+    assert env["records"] == []
+
+
+async def test_camera_density_history_requires_camera_id(mcp: Client) -> None:
+    env = await call(mcp, "camera_density_history", camera_id="")
+    assert env["status"] == "error"
+    assert env["error"]["kind"] == "internal"
+    assert "camera_id" in env["error"]["message"]
 
 
 # --------------------------------------------------------------------------- feed down

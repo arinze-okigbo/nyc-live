@@ -187,6 +187,27 @@ async def _density(svc: Services, p: Params) -> Envelope[Any]:
     )
 
 
+async def _camera_density_history(svc: Services, p: Params) -> Envelope[Any]:
+    """One camera's density trend, bucketed for a client-side chart. Requires `camera_id`."""
+    if not p.camera_id:
+        return _error_envelope(
+            FeedName.DENSITY,
+            "camera_id is required for camera_density_history",
+            ErrorKind.INTERNAL,
+        )
+    cameras: list[Camera] = []
+    if FeedName.DOT_CAMERAS in svc.registry:
+        snap = svc.registry[FeedName.DOT_CAMERAS].snapshot
+        cameras = list(snap.records) if snap is not None else []
+    return svc_api.camera_density_history(
+        svc.store,
+        p.camera_id,
+        since_s=max(p.window_s, 1),
+        limit=p.limit,
+        cameras=cameras,
+    )
+
+
 # --------------------------------------------------------------------------- table
 
 ROUTES: tuple[FeedRoute, ...] = (
@@ -208,6 +229,23 @@ ROUTES: tuple[FeedRoute, ...] = (
             "Pedestrian / vehicle density per camera from nyc-vision detections "
             "(Envelope[CameraDensity]). Until nyc-vision has written density_samples this "
             'is status="error", kind="not_configured"; the heatmap layer is then hidden.'
+        ),
+    ),
+    FeedRoute(
+        key="camera_density_history",
+        feed=FeedName.DENSITY,
+        label="Camera density trend",
+        handler=_camera_density_history,
+        geo=False,
+        default_limit=500,
+        description=(
+            "Per-bucket person/vehicle density trend for one camera "
+            "(Envelope[CameraDensity]), for the map's camera-click trend chart. Requires "
+            "camera_id; window_s sets how far back to look (default 300s at this HTTP "
+            "layer — pass window_s=3600 for the last hour). Bucket size is chosen "
+            'automatically (about 120 points). status="error", kind="not_configured" '
+            "until nyc-vision has written density_samples for this camera; "
+            'kind="internal" means camera_id was missing.'
         ),
     ),
     FeedRoute(

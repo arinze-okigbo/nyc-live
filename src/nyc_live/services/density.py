@@ -1,4 +1,5 @@
-"""`density_now` / `density_history`: aggregates over `density_samples` written by nyc-vision.
+"""`density_now` / `density_history` / `camera_density_history`: aggregates over
+`density_samples` written by nyc-vision.
 
 Rows are (camera_id, ts, class, count). A "frame" is one (camera_id, ts). Per frame we sum
 person counts and vehicle counts (VEHICLE_CLASSES); per camera (and per time bucket for
@@ -265,6 +266,51 @@ def density_history(
             ErrorKind.INTERNAL,
         )
     return _finish(records, query=query, limit=limit, total=len(rows), t=t)
+
+
+_TREND_TARGET_POINTS = 120
+"""Aim for about this many buckets in the default `camera_density_history` trend."""
+
+_TREND_MIN_BUCKET = timedelta(seconds=30)
+
+
+def _adaptive_bucket(since_s: int) -> timedelta:
+    return max(timedelta(seconds=since_s / _TREND_TARGET_POINTS), _TREND_MIN_BUCKET)
+
+
+def camera_density_history(
+    store: Store | None,
+    camera_id: str,
+    *,
+    since_s: int = 3600,
+    bucket_s: int | None = None,
+    limit: int | None = 500,
+    cameras: Iterable[Camera] = (),
+    now: datetime | None = None,
+) -> Envelope[CameraDensity]:
+    """One `CameraDensity` per time bucket for a single camera, for a trend chart.
+
+    `density_history` narrowed to one required `camera_id`, over the trailing `since_s`
+    seconds (default 1 hour). Bucket size defaults to `since_s` divided into roughly
+    `_TREND_TARGET_POINTS` buckets (minimum 30 s) so a chart gets a manageable number of
+    points without the caller having to pick one; pass `bucket_s` to override. Same
+    fields as `density_history`: `person_mean`/`vehicle_mean`/`person_max`/`vehicle_max`
+    per bucket, `window_start`/`window_end`, `sample_count`, `latest_ts`.
+    """
+    if not camera_id:
+        return _error("camera_id is required", ErrorKind.INTERNAL)
+    if since_s <= 0:
+        return _error("since_s must be positive", ErrorKind.INTERNAL)
+    bucket = timedelta(seconds=bucket_s) if bucket_s is not None else _adaptive_bucket(since_s)
+    return density_history(
+        store,
+        camera_id=camera_id,
+        window=timedelta(seconds=since_s),
+        bucket=bucket,
+        limit=limit,
+        cameras=cameras,
+        now=now,
+    )
 
 
 def _bind(
