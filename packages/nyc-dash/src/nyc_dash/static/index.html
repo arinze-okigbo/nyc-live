@@ -41,6 +41,109 @@
     <script defer src="/js/search.js"></script>
     <script defer src="/js/data-sync.js"></script>
     <script defer src="/js/app.js"></script>
+    <!-- TEMPORARY location for the keyboard-shortcut overlay's styles. Every file under
+         /css is owned by other agents this cycle, so these live here instead; they
+         consume tokens.css custom properties only and define no new color values, so
+         moving this block verbatim into a css/shortcuts.css is a pure cut-and-paste. -->
+    <style>
+      /* [hidden] must win over the flex display below, or the overlay would never hide. */
+      .shortcuts-overlay[hidden] { display: none; }
+      .shortcuts-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(6, 9, 13, 0.62);
+      }
+      .shortcuts-dialog {
+        width: min(560px, 100%);
+        max-height: min(78vh, 640px);
+        overflow: auto;
+        padding: 14px 18px 16px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.75);
+      }
+      .shortcuts-head { display: flex; align-items: center; gap: 10px; }
+      .shortcuts-head h2 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .shortcuts-close {
+        margin-left: auto;
+        width: 26px;
+        height: 26px;
+        font-size: 15px;
+        line-height: 1;
+        color: var(--muted);
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .shortcuts-close:hover { color: var(--text); }
+      .shortcuts-section-title {
+        margin: 14px 0 4px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .shortcuts-list { margin: 0; padding: 0; list-style: none; }
+      .shortcuts-list li {
+        display: flex;
+        gap: 12px;
+        align-items: baseline;
+        padding: 5px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .shortcuts-list li:last-child { border-bottom: none; }
+      .shortcut-keys { flex: 0 0 104px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+      .shortcut-key-sep { font-size: 11px; color: var(--muted); }
+      .shortcut-desc { font-size: 13px; color: var(--text); }
+      .shortcuts-foot { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+      .shortcuts-dialog kbd,
+      #shortcuts-button kbd {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 2px 6px;
+      }
+      #shortcuts-button {
+        font: inherit;
+        font-size: 12px;
+        color: var(--muted);
+        background: none;
+        cursor: pointer;
+      }
+      #shortcuts-button:hover { color: var(--text); }
+      #shortcuts-button kbd { padding: 0 4px; margin-left: 2px; }
+      .shortcuts-dialog :focus-visible,
+      #shortcuts-button:focus-visible { outline: 2px solid var(--fresh); outline-offset: 2px; }
+      /* Announcement target for shortcut actions whose only other feedback is visual. */
+      .shortcuts-sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+    </style>
   </head>
   <body>
     <header id="topbar">
@@ -48,6 +151,20 @@
       <span id="weather-badge" class="badge" data-status="loading">weather: loading…</span>
       <span id="health-badge" class="badge" data-status="loading">feeds: loading…</span>
       <span id="connection-badge" class="badge" data-mode="connecting">connecting…</span>
+      <!-- The one always-visible affordance for the whole keyboard layer: without it,
+           `?` (and everything it documents) would be invisible to anyone who doesn't
+           already guess the convention. -->
+      <button
+        type="button"
+        id="shortcuts-button"
+        class="badge"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        aria-controls="shortcuts-overlay"
+        title="Keyboard shortcuts"
+      >
+        shortcuts <kbd aria-hidden="true">?</kbd>
+      </button>
     </header>
 
     <div id="banner" class="banner" hidden></div>
@@ -129,5 +246,30 @@
         <p class="hint" id="updated">no data yet</p>
       </aside>
     </main>
+
+    <!-- Keyboard shortcut help. The shell is static markup so it is present (and
+         inspectable) before any script runs; #shortcuts-body is filled at open time by
+         app.js's renderShortcutsBody() so the per-layer digit rows name the layers that
+         actually exist in FEEDS rather than a hardcoded, drift-prone copy of them. -->
+    <div id="shortcuts-overlay" class="shortcuts-overlay" hidden>
+      <div
+        class="shortcuts-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcuts-title"
+      >
+        <div class="shortcuts-head">
+          <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+          <button type="button" id="shortcuts-close" class="shortcuts-close" aria-label="Close">×</button>
+        </div>
+        <div id="shortcuts-body"></div>
+        <p class="shortcuts-foot">
+          Press <kbd>?</kbd> any time to reopen this list, <kbd>Esc</kbd> or a click outside
+          to close it. Shortcuts never fire while you are typing in a text field.
+        </p>
+      </div>
+    </div>
+
+    <p id="shortcut-status" class="shortcuts-sr-only" role="status" aria-live="polite"></p>
   </body>
 </html>
