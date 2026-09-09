@@ -27,7 +27,8 @@ observed live lagging the wall clock by 37.6h+ (2026-09-09); a fixed 24h
 ```bash
 curl -sS -A "$UA" -G "https://data.cityofnewyork.us/resource/erm2-nwe9.json" \
   ${SOCRATA_APP_TOKEN:+-H "X-App-Token: $SOCRATA_APP_TOKEN"} \
-  --data-urlencode "\$order=created_date DESC" \
+  --data-urlencode "\$select=unique_key,created_date,closed_date,agency,complaint_type,descriptor,status,borough,incident_zip,incident_address,location_type,latitude,longitude" \
+  --data-urlencode "\$order=created_date DESC, unique_key DESC" \
   --data-urlencode "\$limit=20" \
   | jq '.' > "$OUT/nyc311_page.json"
 jq 'length' "$OUT/nyc311_page.json"   # expect 20
@@ -35,16 +36,48 @@ jq 'length' "$OUT/nyc311_page.json"   # expect 20
 
 ## DOHMH restaurant inspections (`43nn-pn8j`) -> `inspections_page.json`
 
+43nn-pn8j publishes one row per violation per inspection visit, so the recorded
+page is deliberately long enough (40 rows) to contain several restaurants with
+multiple rows: that duplication is exactly what
+`InspectionsAdapter.post_process` collapses, and the replay tests assert on it.
+`$select` and `$order` mirror the adapter's own query so the fixture is the real
+response the adapter sees.
+
 ```bash
+SELECT='camis,dba,boro,building,street,zipcode,cuisine_description,inspection_date,action,violation_code,violation_description,critical_flag,score,grade,grade_date,inspection_type,latitude,longitude'
 SINCE=$(TZ=America/New_York date -d '90 days ago' +%Y-%m-%dT%H:%M:%S)   # GNU date
 # macOS: SINCE=$(TZ=America/New_York date -v-90d +%Y-%m-%dT%H:%M:%S)
 curl -sS -A "$UA" -G "https://data.cityofnewyork.us/resource/43nn-pn8j.json" \
   ${SOCRATA_APP_TOKEN:+-H "X-App-Token: $SOCRATA_APP_TOKEN"} \
+  --data-urlencode "\$select=$SELECT" \
   --data-urlencode "\$where=inspection_date >= '$SINCE' AND latitude IS NOT NULL AND longitude IS NOT NULL" \
-  --data-urlencode "\$order=inspection_date DESC" \
-  --data-urlencode "\$limit=20" \
+  --data-urlencode "\$order=inspection_date DESC, camis, violation_code" \
+  --data-urlencode "\$limit=40" \
   | jq '.' > "$OUT/inspections_page.json"
-jq 'length' "$OUT/inspections_page.json"   # expect 20
+jq 'length' "$OUT/inspections_page.json"                        # expect 40
+jq '[.[].camis] | unique | length' "$OUT/inspections_page.json" # fewer than 40; was 12
+```
+
+## One restaurant, one day, two inspections -> `inspections_same_day_graded_and_admin.json`
+
+The hard case for deduplication, recorded whole (4 rows). On 2026-08-17 camis
+50188367 (EAST LIGHT COFFEE) had a Pre-permit (Operational) inspection that
+cited nothing -- grade A, score 0, `violation_code` null -- *and* an
+Administrative Miscellaneous inspection with three violations. Same `camis`,
+same `inspection_date`, so only `inspection_rank`'s score/grade preference
+keeps the graded row; a code-ordered tie-break would report the restaurant as
+ungraded with no score. Re-record with any camis/date pair that still has this
+shape if this one ages out of the dataset's public window.
+
+```bash
+curl -sS -A "$UA" -G "https://data.cityofnewyork.us/resource/43nn-pn8j.json" \
+  ${SOCRATA_APP_TOKEN:+-H "X-App-Token: $SOCRATA_APP_TOKEN"} \
+  --data-urlencode "\$select=$SELECT" \
+  --data-urlencode "\$where=camis = '50188367' AND inspection_date = '2026-08-17T00:00:00' AND latitude IS NOT NULL AND longitude IS NOT NULL" \
+  --data-urlencode "\$order=inspection_date DESC, camis, violation_code" \
+  --data-urlencode "\$limit=20" \
+  | jq '.' > "$OUT/inspections_same_day_graded_and_admin.json"
+jq 'length' "$OUT/inspections_same_day_graded_and_admin.json"   # expect 4
 ```
 
 ## weather.gov, Central Park chain

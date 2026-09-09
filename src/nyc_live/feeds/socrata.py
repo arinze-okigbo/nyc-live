@@ -5,6 +5,12 @@ An app token is optional; when ``SOCRATA_APP_TOKEN`` is set it is sent as
 ``X-App-Token`` (raises the anonymous throttle). Socrata "floating timestamps"
 carry no zone; NYC datasets publish them in America/New_York, so every timestamp
 is localised there and converted to UTC before it reaches a record.
+
+Record identity differs between the two: 311's ``unique_key`` is one row per
+service request, but DOHMH publishes one row per *violation per inspection
+visit*, so ``InspectionsAdapter`` collapses those to one record per restaurant
+(``camis``), keeping the collapsed rows as ``RestaurantInspection.violations``
+-- see ``inspection_rank`` and ``_collapse_visit``.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from itertools import groupby
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
@@ -24,6 +31,7 @@ from nyc_live.contracts import (
     ErrorKind,
     FeedName,
     FeedUnavailable,
+    InspectionViolation,
     RestaurantInspection,
     ServiceRequest,
     Snapshot,
@@ -239,6 +247,15 @@ class _SocrataAdapter[RecordT: BaseModel]:
     def parse_row(self, row: Row) -> RecordT:
         raise NotImplementedError
 
+    def post_process(self, records: list[RecordT]) -> list[RecordT]:
+        """Hook: collapse / reorder mapped records before they become a Snapshot.
+
+        Runs after parsing and bbox filtering, so subclasses only ever see valid,
+        in-NYC records. Default is a no-op; ``InspectionsAdapter`` overrides it to
+        collapse DOHMH's one-row-per-violation output to one row per restaurant.
+        """
+        return records
+
     def validate_freshness(self, rows: list[Row], fetched_at: datetime) -> None:
         """Optional circuit breaker for feeds with no calendar ``$where`` window.
 
@@ -297,6 +314,7 @@ class _SocrataAdapter[RecordT: BaseModel]:
                 kind=ErrorKind.UPSTREAM_PARSE,
                 url=self.source_url,
             )
+        records = self.post_process(records)
         return Snapshot[RecordT](
             feed=self.name,
             fetched_at=fetched_at,
@@ -431,9 +449,100 @@ class Nyc311Adapter(_SocrataAdapter[ServiceRequest]):
 # DOHMH restaurant inspections
 # ---------------------------------------------------------------------------
 
+CRITICAL_FLAG = "Critical"
+"""``critical_flag`` value DOHMH uses for a critical violation (vs "Not Critical" /
+"Not Applicable")."""
+
+InspectionRank = tuple[float, tuple[bool, bool], int, tuple[bool, str], tuple[bool, str]]
+
+
+def _newest_first(record: RestaurantInspection) -> float:
+    """Ascending sort component putting the newest inspection first, undated rows last."""
+    when = record.inspection_date
+    return -when.timestamp() if when is not None else float("inf")
+
+
+def inspection_rank(record: RestaurantInspection) -> InspectionRank:
+    """Sort key deciding which of a restaurant's rows survives deduplication (lowest wins).
+
+    43nn-pn8j publishes one row per violation per inspection visit, so a single
+    ``camis`` routinely appears 3-10 times in a 90-day window. Collapsing needs a
+    *total* order, not just "newest": ~10% of same-day groups hold two different
+    inspections (a graded "Cycle Inspection" plus an ungraded ancillary one such as
+    "Smoke-Free Air Act" or "Administrative Miscellaneous"), and every violation of
+    a visit repeats the same date. Without a full tie-break the surviving row would
+    flap between violations on every refresh and could land on an ungraded ancillary
+    row that reports ``grade=None, score=None`` for a restaurant that was in fact
+    graded that day. Components, in order:
+
+    1. newest ``inspection_date`` first (undated rows last);
+    2. rows carrying a score, then a grade, first -- keeps the graded inspection of
+       the day over the ancillary one;
+    3. ``Critical`` violations before non-critical -- the most consequential
+       violation of the visit is the one worth surfacing;
+    4. then ``violation_code`` and ``violation_description`` ascending (nulls last)
+       purely to make the order total and therefore stable across fetches.
+
+    Rows that still tie after every component are byte-identical duplicates that
+    DOHMH itself publishes (48 of 25,418 rows on 2026-09-09), so the choice between
+    them is not observable.
+    """
+    return (
+        _newest_first(record),
+        (record.score is None, record.grade is None),
+        0 if record.critical_flag == CRITICAL_FLAG else 1,
+        (record.violation_code is None, record.violation_code or ""),
+        (record.violation_description is None, record.violation_description or ""),
+    )
+
+
+def _display_order(record: RestaurantInspection) -> tuple[float, str]:
+    """Snapshot order: newest inspection first, ``camis`` breaking the (many) date ties."""
+    return (_newest_first(record), record.camis)
+
+
+def _collapse_visit(ranked_group: list[RestaurantInspection]) -> RestaurantInspection:
+    """One restaurant's rows (already sorted by :func:`inspection_rank`) -> one record.
+
+    The first row wins and carries every violation cited on its ``inspection_date``,
+    itself included, so a consumer can render ``violations`` without special-casing
+    the mirrored ``violation_code`` / ``violation_description`` pair. The list keeps
+    the ranking's order -- graded inspection first, then critical violations, then
+    code -- so it does not reshuffle under a user with the detail panel open.
+
+    Scope is the *date*, not the ``inspection_type``: a restaurant can be inspected
+    twice in one day (a graded visit plus an ancillary Smoke-Free Air Act /
+    Administrative Miscellaneous one) and both sets of violations were cited that day.
+    Rows carrying neither a code nor a description are DOHMH's "nothing cited" marker,
+    not a violation, so they are omitted -- that is what makes ``violations`` empty for
+    a clean inspection. Rows identical to one already listed are DOHMH's own duplicate
+    publications of a single violation and are listed once.
+    """
+    winner = ranked_group[0]
+    cited = [
+        InspectionViolation(
+            code=r.violation_code,
+            description=r.violation_description,
+            critical_flag=r.critical_flag,
+        )
+        for r in ranked_group
+        if r.inspection_date == winner.inspection_date
+        and (r.violation_code is not None or r.violation_description is not None)
+    ]
+    unique = list({(v.code, v.description, v.critical_flag): v for v in cited}.values())
+    return winner.model_copy(update={"violations": unique})
+
 
 class InspectionsAdapter(_SocrataAdapter[RestaurantInspection]):
-    """One row per violation for inspections in the last 90 days, geocoded rows only.
+    """One record per restaurant -- its most recent inspection -- over the last 90 days.
+
+    The upstream rows are one-per-violation-per-visit; ``post_process`` collapses
+    them by ``camis`` using :func:`inspection_rank` and keeps the discarded rows'
+    information in the survivor's ``violations`` list (:func:`_collapse_visit`).
+    All matching rows are still fetched -- they are what the ranking chooses
+    between and what fills ``violations``, and Socrata offers no server-side "row
+    per group" without dropping to the newer pipe/window-function SoQL that is
+    mutually exclusive with ``$select``/``$where``/``$offset`` paging.
 
     The dataset marks never-inspected venues with ``inspection_date = 1900-01-01``;
     the 90-day window excludes them. Rows without coordinates, or with the
@@ -442,6 +551,10 @@ class InspectionsAdapter(_SocrataAdapter[RestaurantInspection]):
 
     name = FeedName.DOHMH_INSPECTIONS
     dataset = DATASET_INSPECTIONS
+    # Not the dedup rule -- that is `inspection_rank`, applied client-side so the
+    # snapshot does not depend on Socrata's ordering. This exists only to make
+    # `$offset` paging stable: (inspection_date, camis, violation_code) is unique
+    # across the window apart from DOHMH's own byte-identical duplicate rows.
     order = "inspection_date DESC, camis, violation_code"
     select = ",".join(
         (
@@ -494,14 +607,35 @@ class InspectionsAdapter(_SocrataAdapter[RestaurantInspection]):
             inspection_type=optional_str(row.get("inspection_type")),
         )
 
+    def post_process(self, records: list[RestaurantInspection]) -> list[RestaurantInspection]:
+        """Collapse to one record per ``camis``: the winner under :func:`inspection_rank`,
+        carrying its visit's violations."""
+        ranked = sorted(records, key=lambda r: (r.camis, inspection_rank(r)))
+        winners = [
+            _collapse_visit(list(group)) for _, group in groupby(ranked, key=lambda r: r.camis)
+        ]
+        collapsed = sorted(winners, key=_display_order)
+        dropped = len(records) - len(collapsed)
+        if dropped:
+            log.info(
+                "%s: collapsed %d violation rows into %d restaurants (%d duplicate rows dropped)",
+                self.name.value,
+                len(records),
+                len(collapsed),
+                dropped,
+            )
+        return collapsed
+
 
 __all__ = [
+    "CRITICAL_FLAG",
     "DATASET_311",
     "DATASET_INSPECTIONS",
     "NYC_TZ",
     "InspectionsAdapter",
     "Nyc311Adapter",
     "format_floating_timestamp",
+    "inspection_rank",
     "parse_floating_timestamp",
     "soda_fetch_all",
     "soda_headers",

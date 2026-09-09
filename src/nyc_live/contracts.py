@@ -474,7 +474,31 @@ class ServiceRequest(MaybeLocated):
     location_type: str | None = None
 
 
+class InspectionViolation(StrictModel):
+    """One violation cited on a single inspection visit.
+
+    DOHMH publishes one dataset row per violation, so a single visit spans many rows.
+    The adapter collapses them onto the visit that cited them; this is that list's
+    element type.
+    """
+
+    code: str | None = None
+    description: str | None = None
+    critical_flag: str | None = None
+
+
 class RestaurantInspection(MaybeLocated):
+    """One restaurant's most recent inspection visit -- one record per `camis`.
+
+    DOHMH's dataset is one row per violation per visit, so the same restaurant appears
+    many times upstream (measured: 500 raw rows covered only 140 restaurants). The
+    adapter collapses that to the newest visit per restaurant, preferring the graded
+    row when a date carries both a graded inspection and an ungraded ancillary one, so
+    `grade`/`score` reflect what the restaurant actually got. Every violation from the
+    surviving visit -- including the one mirrored in `violation_code` /
+    `violation_description` -- is kept in `violations`.
+    """
+
     camis: str
     dba: str | None
     boro: str | None
@@ -491,6 +515,8 @@ class RestaurantInspection(MaybeLocated):
     grade: str | None = None
     grade_date: AwareDatetime | None = None
     inspection_type: str | None = None
+    violations: list[InspectionViolation] = Field(default_factory=list)
+    """Every violation cited on `inspection_date`. Empty when nothing was cited."""
 
 
 class WeatherObservation(StrictModel):
