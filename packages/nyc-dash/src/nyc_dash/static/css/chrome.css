@@ -54,6 +54,61 @@
 .badge[data-mode="polling"] { color: var(--stale); border-color: var(--stale); }
 .badge[data-mode="down"] { color: var(--error); border-color: var(--error); }
 
+/* Weather badge only turns clickable (status-panel.js's `.has-forecast`) once a real
+   forecast has actually loaded -- no affordance is ever shown for data that isn't
+   there yet. The trailing caret is generated content so it doesn't disturb the
+   ellipsis-truncated badge text itself. */
+.badge.has-forecast { cursor: pointer; }
+.badge.has-forecast::after {
+  content: "\25BE";
+  margin-left: 4px;
+  opacity: 0.7;
+}
+
+/* Anchored via `position: fixed` + inline top/left set from status-panel.js against
+   the badge's own getBoundingClientRect() -- appended to <body>, not nested inside
+   the badge, since `.badge` above sets `overflow: hidden` for its own ellipsis text
+   and would otherwise clip this silently. Sits above the click-detail panel
+   (z-index 5 in detail-panel.css) since both can be open across a narrow viewport. */
+.weather-forecast-popover {
+  position: fixed;
+  z-index: 6;
+  width: min(260px, calc(100vw - 24px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.weather-period-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.weather-period-list li + li {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.weather-period-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.weather-period-temp { color: var(--muted); font-weight: 400; }
+
+.weather-period-detail { margin: 2px 0 0; color: var(--muted); }
+
 /* .banner is toggled via the `hidden` attribute in markup, not a class -- explicitly
    keep that working now that we set our own `display` for the visible state, since
    an author rule that sets `display` always wins over the UA [hidden] stylesheet

@@ -3,7 +3,8 @@
  * header's health/weather badges. Everything here reads envelope.status and nothing
  * else -- see the degradation rules in app.js.
  *
- * Depends on: utils.js (el, hhmmss), state.js (state), map-layers.js (FEEDS, renderLayers).
+ * Depends on: utils.js (el, hhmmss, escapeHtml), state.js (state), map-layers.js (FEEDS,
+ * renderLayers).
  */
 
 // Pictogram + accent color for each layer, matching that layer's actual map marker
@@ -157,12 +158,14 @@ function applyWeather(envelope) {
   if (envelope.status === "error") {
     badge.textContent = "weather unavailable";
     badge.title = envelope.error ? envelope.error.message : "";
+    renderWeatherForecast([]);
     return;
   }
   const report = envelope.records[0];
   if (!report) {
     badge.textContent = "weather: no station reported";
     badge.title = "";
+    renderWeatherForecast([]);
     return;
   }
   const obs = report.observation || {};
@@ -174,4 +177,129 @@ function applyWeather(envelope) {
   badge.title =
     `observed ${hhmmss(obs.observed_at)}` +
     (envelope.error ? `\n${envelope.error.message}` : "");
+  renderWeatherForecast(report.forecast);
+}
+
+// -- Weather forecast popover -----------------------------------------------
+//
+// The weather badge only has room for the current observation, but the backend
+// already fetches a fuller NWS forecast (`report.forecast`: a handful of upcoming
+// named periods, e.g. "Tonight"/"Tomorrow", each with its own temperature/sky/precip/
+// wind) that was previously fetched and silently discarded. Surfaced here as a small
+// click-to-toggle popover anchored under the badge, not the badge's `title` tooltip:
+// a native tooltip can't hold several periods' worth of distinct fields without
+// collapsing into a hard-to-scan wall of plain text, can't be dismissed or reached
+// without hovering (awkward on touch), and every other "more detail" affordance in
+// this app (the click-detail panel) is already click-driven for the same reasons.
+// This popover is self-contained here rather than routed through detail-panel.js,
+// which is out of scope for this file and owned/being edited elsewhere right now.
+const FORECAST_PERIODS_SHOWN = 3;
+
+let weatherForecastPeriods = [];
+let weatherPopoverEl = null;
+let weatherPopoverResizeHandler = null;
+
+function periodTempLabel(period) {
+  return period.temperature_c == null ? "—" : `${Math.round(period.temperature_c)}°C`;
+}
+
+function weatherPeriodHtml(period) {
+  const precip =
+    period.precip_probability_pct == null
+      ? ""
+      : ` · ${Math.round(period.precip_probability_pct)}% precip`;
+  const wind = period.wind_speed ? ` · ${escapeHtml(period.wind_speed)} wind` : "";
+  return `<li>
+    <div class="weather-period-head">
+      <span class="weather-period-name">${escapeHtml(period.name)}</span>
+      <span class="weather-period-temp">${periodTempLabel(period)}</span>
+    </div>
+    <p class="weather-period-detail">${escapeHtml(period.short_forecast)}${precip}${wind}</p>
+  </li>`;
+}
+
+// Anchored with `position: fixed` against the badge's own bounding rect rather than
+// nested inside the badge -- `.badge` sets `overflow: hidden` (chrome.css) to ellipsize
+// long single-line text, which would silently clip a popover appended as its child.
+function positionWeatherPopover() {
+  if (!weatherPopoverEl) return;
+  const rect = el("weather-badge").getBoundingClientRect();
+  weatherPopoverEl.style.top = `${rect.bottom + 6}px`;
+  weatherPopoverEl.style.left = `${rect.left}px`;
+}
+
+function setWeatherPopoverOpen(open) {
+  const badge = el("weather-badge");
+  if (open) {
+    positionWeatherPopover();
+    weatherPopoverEl.hidden = false;
+    badge.setAttribute("aria-expanded", "true");
+    weatherPopoverResizeHandler = positionWeatherPopover;
+    window.addEventListener("resize", weatherPopoverResizeHandler);
+  } else {
+    weatherPopoverEl.hidden = true;
+    badge.setAttribute("aria-expanded", "false");
+    if (weatherPopoverResizeHandler) {
+      window.removeEventListener("resize", weatherPopoverResizeHandler);
+      weatherPopoverResizeHandler = null;
+    }
+  }
+}
+
+// Built once, on the first forecast this session actually has data to show -- there's
+// nothing to make clickable, and nothing to close a listener over, until then.
+function ensureWeatherPopover() {
+  if (weatherPopoverEl) return;
+  const badge = el("weather-badge");
+  const popover = document.createElement("div");
+  popover.id = "weather-forecast-popover";
+  popover.className = "weather-forecast-popover";
+  popover.hidden = true;
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-label", "Upcoming forecast");
+  document.body.appendChild(popover);
+  weatherPopoverEl = popover;
+  badge.setAttribute("role", "button");
+  badge.setAttribute("tabindex", "0");
+  badge.setAttribute("aria-haspopup", "dialog");
+  badge.setAttribute("aria-expanded", "false");
+  const toggle = (ev) => {
+    ev.preventDefault();
+    if (!weatherForecastPeriods.length) return;
+    setWeatherPopoverOpen(popover.hidden);
+  };
+  badge.addEventListener("click", toggle);
+  badge.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") toggle(ev);
+  });
+  document.addEventListener("click", (ev) => {
+    if (popover.hidden || ev.target === badge || popover.contains(ev.target)) return;
+    setWeatherPopoverOpen(false);
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !popover.hidden) setWeatherPopoverOpen(false);
+  });
+}
+
+// Real forecast periods only -- an empty `forecast` (legitimate: `_report_for` can
+// resolve a station with a good observation, see weather.py) removes the popover
+// affordance entirely rather than opening onto an empty or fabricated placeholder.
+function renderWeatherForecast(periods) {
+  weatherForecastPeriods = periods || [];
+  const badge = el("weather-badge");
+  badge.classList.toggle("has-forecast", weatherForecastPeriods.length > 0);
+  if (!weatherForecastPeriods.length) {
+    badge.removeAttribute("role");
+    badge.removeAttribute("tabindex");
+    badge.removeAttribute("aria-haspopup");
+    badge.removeAttribute("aria-expanded");
+    if (weatherPopoverEl) setWeatherPopoverOpen(false);
+    return;
+  }
+  ensureWeatherPopover();
+  weatherPopoverEl.innerHTML = `<ul class="weather-period-list">${weatherForecastPeriods
+    .slice(0, FORECAST_PERIODS_SHOWN)
+    .map(weatherPeriodHtml)
+    .join("")}</ul>`;
+  if (!weatherPopoverEl.hidden) positionWeatherPopover();
 }
