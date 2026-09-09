@@ -1,0 +1,25 @@
+/*
+ * Design tokens: the only place color/spacing constants are defined. Every other
+ * stylesheet on this page references these custom properties, never a raw hex value.
+ */
+:root {
+  --bg: #10141a;
+  --panel: #171c25;
+  --line: #232b38;
+  --text: #e6ebf2;
+  --muted: #8d99ae;
+  --fresh: #2ecc71;
+  --stale: #f4a259;
+  --error: #ef476f;
+  --topbar-h: 48px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}

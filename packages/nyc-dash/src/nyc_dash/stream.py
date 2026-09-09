@@ -26,9 +26,9 @@ POLLING FALLBACK
 `/api/stream` is an optimisation, not a requirement. Every event name is also a
 `GET /api/<feed>` endpoint returning the identical envelope, so a client that
 cannot hold an EventSource open (no SSE support, a buffering proxy, a stream
-error) polls those endpoints on a timer instead. `static/app.js` does exactly
-that: it switches to `setInterval` polling on the first `EventSource` error and
-shows "polling" in the connection pill.
+error) polls those endpoints on a timer instead. `static/js/data-sync.js` does
+exactly that: it switches to `setInterval` polling on the first `EventSource`
+error and shows "polling" in the connection pill.
 """
 
 from __future__ import annotations

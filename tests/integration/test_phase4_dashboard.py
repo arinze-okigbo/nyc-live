@@ -348,8 +348,8 @@ def test_static_assets_are_served_and_name_the_blocked_cdns(client: TestClient) 
     assert "text/html" in page.headers["content-type"]
     body = page.text
     assert "/api/stream" in body or "app.js" in body
-    assert client.get("/app.js").status_code == 200
-    assert client.get("/style.css").status_code == 200
+    assert client.get("/js/app.js").status_code == 200
+    assert client.get("/css/tokens.css").status_code == 200
 
 
 def test_offline_env_really_is_offline(offline_upstreams: int) -> None:

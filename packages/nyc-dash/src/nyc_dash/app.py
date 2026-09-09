@@ -15,7 +15,9 @@ Endpoints
 * `GET /api/health` — `FeedRegistry.health()` plus the DuckDB store state.
 * `GET /api/stream` — Server-Sent Events; see `nyc_dash.stream` for the wire
   format and the polling fallback.
-* `/` — the static single-page dashboard (`static/index.html`, `app.js`, `style.css`).
+* `/` — the static single-page dashboard (`static/index.html`, `static/js/*.js`,
+  `static/css/*.css` -- no build step, plain scripts/stylesheets loaded in dependency
+  order; see the `<head>` comment in `index.html`).
 
 This process never touches an upstream directly: it reads `nyc_live.services`
 only, and every refresh decision belongs to `CachedFeed`. Records are never

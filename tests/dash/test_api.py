@@ -243,5 +243,5 @@ def test_index_and_assets_are_served(client: TestClient) -> None:
     assert index.status_code == 200
     assert index.headers["content-type"].startswith("text/html")
     assert "nyc-live" in index.text
-    assert client.get("/app.js").status_code == 200
-    assert client.get("/style.css").status_code == 200
+    assert client.get("/js/app.js").status_code == 200
+    assert client.get("/css/tokens.css").status_code == 200

@@ -1,0 +1,107 @@
+/*
+ * Global page chrome: header/topbar, status badges, the error banner, the main layout
+ * split (map + sidebar), and the map's own loading state. Reads color tokens from
+ * tokens.css (:root) -- never redefine a token here, only consume var(--...).
+ */
+
+#topbar {
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+#topbar h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin: 0 8px 0 0;
+  text-transform: uppercase;
+}
+
+.badge {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+
+.badge[data-status="fresh"] { color: var(--fresh); border-color: var(--fresh); }
+.badge[data-status="stale"] { color: var(--stale); border-color: var(--stale); }
+.badge[data-status="error"] { color: var(--error); border-color: var(--error); }
+.badge[data-mode="live"] { color: var(--fresh); border-color: var(--fresh); }
+.badge[data-mode="polling"] { color: var(--stale); border-color: var(--stale); }
+.badge[data-mode="down"] { color: var(--error); border-color: var(--error); }
+
+.banner {
+  padding: 8px 14px;
+  background: #3a1f2b;
+  border-bottom: 1px solid var(--error);
+  color: #ffd7e0;
+  font-size: 13px;
+}
+
+main {
+  display: flex;
+  height: calc(100% - var(--topbar-h));
+}
+
+#map {
+  flex: 1 1 auto;
+  position: relative;
+  background: #0b0e13;
+}
+
+/* The basemap covers all five boroughs on first load, so its vector tiles take a
+   few seconds to finish arriving over the network -- a plain blank/cream frame in
+   that window reads as broken. Fade the map in on the first 'idle' event (all
+   requested tiles loaded) instead of showing that half-loaded state by accident. */
+#map .maplibregl-canvas-container,
+#map > canvas {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+#map.ready .maplibregl-canvas-container,
+#map.ready > canvas {
+  opacity: 1;
+}
+
+#map-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+#map.ready #map-loading { opacity: 0; }
+
+#map-loading .spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--muted);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.deck-tooltip {
+  font-size: 12px;
+  background: rgba(16, 20, 26, 0.94) !important;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px !important;
+}
