@@ -30,6 +30,7 @@ from fastmcp.client.transports import StdioTransport
 from mcp.types import TextContent
 
 from nyc_live.contracts import DEFAULT_TTL, FeedName
+from nyc_live.feeds import ADAPTER_SPECS
 from nyc_live.store import Store
 from nyc_mcp.server import TOOL_NAMES
 from tests.integration.conftest import (
@@ -257,7 +258,10 @@ async def test_feed_health_covers_every_registered_feed(mcp: Client) -> None:
     assert isinstance(health, dict)
     assert set(health) == {"checked_at", "store", "feeds"}
     feeds = {f["feed"]: f for f in health["feeds"]}
-    assert len(feeds) == 11, sorted(feeds)
+    # Assert the exact registered set, not a magic count: this is the stronger claim
+    # (it catches a feed being swapped, not just dropped) and it does not need editing
+    # every time a feed is added, which is how it silently drifted before.
+    assert set(feeds) == {spec.feed.value for spec in ADAPTER_SPECS}, sorted(feeds)
     for name, entry in feeds.items():
         assert set(entry) == {
             "feed",

@@ -234,21 +234,29 @@ async def test_every_feed_can_be_redirected_by_settings(
     or as a `fresh` envelope, and both are asserted against below.
     """
     marker = f"http://127.0.0.1:{offline_upstreams}/redirected-by-integration-tester"
+    # Derived from Settings, never hand-listed. This override list *was* hand-maintained
+    # and silently rotted the moment two feeds were added: air_quality and ny511_events
+    # kept their real URLs, so an offline run made a genuine outbound call to Open-Meteo
+    # -- exactly the leak this test exists to catch, hiding in the test itself. Anything
+    # that looks like an upstream URL field is redirected, so a new feed is covered the
+    # day it lands rather than the day someone remembers to add it here.
+    url_fields = [
+        name
+        for name, field in type(integration_settings).model_fields.items()
+        if (
+            name.endswith(("_base", "_url", "_root"))
+            and isinstance(getattr(integration_settings, name, None), str)
+        )
+    ]
+    assert url_fields, "no upstream URL settings found; the derivation above has broken"
     redirected = integration_settings.model_copy(
-        update={
-            "dot_cameras_base": f"{marker}/cameras",
-            "mta_gtfs_base": f"{marker}/mta",
-            "mta_static_gtfs_url": f"{marker}/gtfs_subway.zip",
-            "citibike_gbfs_root": f"{marker}/gbfs.json",
-            "socrata_base": f"{marker}/socrata",
-            "weather_base": f"{marker}/weather",
-        }
+        update={name: f"{marker}/{name}" for name in url_fields}
     )
     key_gated = {FeedName.MTA_BUS, FeedName.NY511_CAMERAS}
     async with open_services(redirected, open_store=False, strict=True) as svc:
         stops_url = svc.registry[FeedName.MTA_SUBWAY_STOPS].adapter.source_url  # type: ignore[attr-defined]
         envelopes = await svc.registry.refresh_all()
-    assert stops_url == f"{marker}/gtfs_subway.zip", (
+    assert stops_url == f"{marker}/mta_static_gtfs_url", (
         "the stops adapter must resolve its URL from Settings at fetch time"
     )
     assert all(env.status == "error" for env in envelopes.values()), (

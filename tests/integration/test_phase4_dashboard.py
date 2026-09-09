@@ -46,6 +46,7 @@ from nyc_live.contracts import (
     WeatherObservation,
     WeatherReport,
 )
+from nyc_live.feeds import ADAPTER_SPECS
 from nyc_live.services import Services, build_services
 from tests.integration.conftest import (
     CAM_A,
@@ -106,7 +107,9 @@ def test_health_endpoint_reports_every_feed(client: TestClient) -> None:
     assert body["store"]["open"] is True
     assert body["store"]["read_only"] is True, "the dashboard must open DuckDB read-only"
     feeds = {f["feed"]: f for f in body["feeds"]}
-    assert len(feeds) == 11, sorted(feeds)
+    # The exact registered set, not a magic count -- stronger (catches a swap, not just
+    # a drop) and it does not need editing every time a feed is added.
+    assert set(feeds) == {spec.feed.value for spec in ADAPTER_SPECS}, sorted(feeds)
     assert feeds[FeedName.MTA_BUS.value]["configured"] is False
     assert feeds[FeedName.NY511_CAMERAS.value]["configured"] is False
     for entry in body["feeds"]:
