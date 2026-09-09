@@ -263,6 +263,30 @@ function cameraLayer(envelope) {
   });
 }
 
+// When search.js sets `highlightedBusRoute` (state.js) -- a bus-route search result was
+// selected -- that route's vehicles jump to full opacity and a larger radius while every
+// other bus dims, the same "bring the selected thing forward, mute the rest" treatment
+// subwayShapesLayer's route highlight above gives a subway line. Unlike that PathLayer
+// (whose path per route never changes), a bus is a point per vehicle and there can be
+// dozens on one route, so this dims/enlarges per-point via the accessors below rather
+// than swapping in a wholly different layer.
+const BUS_DEFAULT_ALPHA = 210;
+const BUS_DIM_ALPHA = 70; // some other route is highlighted instead
+const BUS_HIGHLIGHT_ALPHA = 230;
+const BUS_DEFAULT_RADIUS = 45;
+const BUS_DIM_RADIUS = 25;
+const BUS_HIGHLIGHT_RADIUS = 140;
+
+function busAlpha(routeId) {
+  if (!highlightedBusRoute) return BUS_DEFAULT_ALPHA;
+  return busRouteLabel(routeId) === highlightedBusRoute ? BUS_HIGHLIGHT_ALPHA : BUS_DIM_ALPHA;
+}
+
+function busRadius(routeId) {
+  if (!highlightedBusRoute) return BUS_DEFAULT_RADIUS;
+  return busRouteLabel(routeId) === highlightedBusRoute ? BUS_HIGHLIGHT_RADIUS : BUS_DIM_RADIUS;
+}
+
 function busLayer(envelope) {
   const data = located(envelope.records);
   if (!data.length) return null;
@@ -274,18 +298,29 @@ function busLayer(envelope) {
     highlightColor: HOVER_HIGHLIGHT,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
-    getRadius: 45,
+    getRadius: (d) => busRadius(d.route_id),
     radiusMinPixels: 2,
-    radiusMaxPixels: 8,
+    // Raised only while a route is highlighted, so the highlighted route's much larger
+    // meter radius (BUS_HIGHLIGHT_RADIUS) actually reads bigger on screen instead of
+    // being clamped down to the same 8px every other bus already uses -- a plain
+    // (non-accessor) prop like bikeLayer's zoom-dependent radiusMinPixels above, so
+    // ordinary prop diffing on the freshly-built layer picks it up with no trigger.
+    radiusMaxPixels: highlightedBusRoute ? 16 : 8,
     // Same categorical-jump reasoning as subwayLayer above (a bus's route is a jump,
     // not something that eases): ROUTE_COLORS is keyed by subway line, so most bus
     // route codes fall through to the same neutral fallback subwayLayer uses for an
     // unrecognized route -- reusing that palette, not inventing a bus-specific one.
-    getFillColor: (d) => [...(ROUTE_COLORS[busRouteLabel(d.route_id)] || [244, 211, 94]), 210],
+    getFillColor: (d) => [
+      ...(ROUTE_COLORS[busRouteLabel(d.route_id)] || [244, 211, 94]),
+      busAlpha(d.route_id),
+    ],
     getLineColor: [10, 12, 16],
     lineWidthMinPixels: 1,
     stroked: true,
-    updateTriggers: { getFillColor: envelope.fetched_at },
+    updateTriggers: {
+      getFillColor: [envelope.fetched_at, highlightedBusRoute],
+      getRadius: highlightedBusRoute,
+    },
   });
 }
 

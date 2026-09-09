@@ -289,6 +289,80 @@ def test_search_js_loads_after_its_dependencies_and_before_data_sync() -> None:
     assert local_scripts.index("/js/search.js") > local_scripts.index("/js/utils.js")
 
 
+def test_search_covers_dot_cameras_over_already_fetched_state() -> None:
+    """Search must also cover dot_cameras, the same way it already covers
+    subway_arrivals/citibike -- no re-fetch, no new endpoint, records read straight out
+    of the shared `state` map."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert 'searchRecordsFor("dot_cameras")' in search_js
+    assert 'kind: "cameras"' in search_js  # matches DETAIL_BUILDERS' real key, not the feed key
+
+
+def test_camera_search_result_selection_flies_to_it_and_opens_its_detail_panel() -> None:
+    """A selected camera result must go through the exact same flyTo + DETAIL_BUILDERS
+    handoff selectSearchResult already uses for subway/citibike, not a bespoke path."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "function searchCameraResults(query)" in search_js
+    assert "DETAIL_BUILDERS[result.kind]" in search_js
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "cameras: cameraDetail," in detail_js
+
+
+def test_bus_route_search_is_a_distinct_kind_that_highlights_instead_of_flying_to_a_point() -> None:
+    """A bus route has no single record to fly to (many live vehicles), so it must be a
+    distinct result kind whose selection sets highlightedBusRoute rather than calling
+    map.flyTo, and must reuse busRouteLabel (map-layers.js) rather than reimplementing
+    agency-prefix parsing."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert 'searchRecordsFor("mta_bus")' in search_js
+    assert "busRouteLabel(record.route_id)" in search_js
+    assert 'kind: "bus_route"' in search_js
+    assert "function selectBusRouteResult(result)" in search_js
+    assert (
+        "highlightedBusRoute = highlightedBusRoute === result.route ? null : result.route;"
+        in search_js
+    )
+    # the bus_route branch must return before reaching the flyTo/DETAIL_BUILDERS path
+    # every other kind shares.
+    bus_branch = search_js[search_js.index("function selectSearchResult(result) {") :]
+    assert 'if (result.kind === "bus_route")' in bus_branch
+    assert bus_branch.index('if (result.kind === "bus_route")') < bus_branch.index("map.flyTo(")
+
+
+def test_bus_route_highlight_drives_bus_layer_via_a_shared_state_global() -> None:
+    """highlightedBusRoute (state.js) must be its own variable, not a reuse of
+    highlightedRoute (which means something different: a highlighted subway line), and
+    busLayer() (map-layers.js) must read it to dim/emphasize markers and re-render on
+    that change alone via updateTriggers, the same idiom subwayShapesLayer's route
+    highlight already established for highlightedRoute."""
+    assert "let highlightedBusRoute = null;" in APP_JS
+    assert "function busAlpha(routeId)" in APP_JS
+    assert "function busRadius(routeId)" in APP_JS
+    assert "getRadius: (d) => busRadius(d.route_id)," in APP_JS
+    assert "getFillColor: (d) => [" in APP_JS
+    assert "busAlpha(d.route_id)" in APP_JS
+    assert "getRadius: highlightedBusRoute," in APP_JS
+
+
+def test_selecting_a_bus_route_auto_enables_the_bus_layer() -> None:
+    """mta_bus defaults to hidden (dense data, opt-in like dot_cameras); searching for a
+    route implies wanting to see it, so selection must flip that layer's visibility and
+    its sidebar checkbox on rather than leaving the user to discover a second manual
+    step, mirroring buildPanel()'s own checkbox-wiring pattern (status-panel.js)."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "function enableBusLayer()" in search_js
+    assert 'state.get("mta_bus")' in search_js
+    assert 'el("toggle-mta_bus")' in search_js
+    assert "entry.visible = true;" in search_js
+
+
+def test_search_kind_badge_css_exists_for_cameras_and_bus_routes() -> None:
+    """The 4th/5th result-kind badges (cameras, bus_route) must have their own color
+    rule, following the exact per-kind selector pattern subway/citibike already use."""
+    assert '.search-result-kind[data-kind="cameras"]' in STYLE
+    assert '.search-result-kind[data-kind="bus_route"]' in STYLE
+
+
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:
     assert client.get("/index.html").headers["content-type"].startswith("text/html")
     assert (

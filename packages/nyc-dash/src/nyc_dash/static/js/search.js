@@ -1,11 +1,22 @@
 /*
- * Sidebar search: find an already-fetched subway station or Citi Bike dock by name and
- * jump straight to it, instead of hunting for one marker among thousands on the map.
+ * Sidebar search: find an already-fetched subway station, Citi Bike dock, or DOT camera
+ * by name and jump straight to it, instead of hunting for one marker among thousands on
+ * the map; or find a bus route by number and highlight its live vehicles on the map.
  * Entirely client-side over data the app already polls -- no new backend endpoint.
  *
- * Depends on: utils.js (el, escapeHtml), state.js (state, map), detail-panel.js
- * (DETAIL_BUILDERS). Self-initializes on DOMContentLoaded like app.js does, since this
- * file must not require app.js to know about it.
+ * Depends on: utils.js (el, escapeHtml), state.js (state, map, highlightedBusRoute),
+ * map-layers.js (busRouteLabel, renderLayers), detail-panel.js (DETAIL_BUILDERS).
+ * Self-initializes on DOMContentLoaded like app.js does, since this file must not
+ * require app.js to know about it.
+ *
+ * Three of the four searchable kinds (subway, Citi Bike, DOT cameras) resolve to one
+ * named record with coordinates: selecting one flies the map there and opens that
+ * record's real detail panel via the shared DETAIL_BUILDERS table, exactly the same
+ * handoff a map click already uses. Bus routes are different in kind -- a route is many
+ * live vehicles, not one point -- so a bus-route result instead sets `highlightedBusRoute`
+ * (state.js) and lets busLayer() (map-layers.js) bring that route's vehicles forward on
+ * the map already on screen, the same "drive a map layer through a shared global" idiom
+ * alerts-banner.js's route chips already established for highlightedRoute.
  */
 
 // A keystroke-by-keystroke re-filter over ~800 subway arrivals + ~2500 Citi Bike
@@ -75,14 +86,73 @@ function searchCitibikeResults(query) {
     }));
 }
 
+// `kind: "cameras"` matches DETAIL_BUILDERS' actual key for this record type
+// (detail-panel.js: `cameras: cameraDetail`), not the dot_cameras state/feed key --
+// same as how searchSubwayResults' "subway" kind matches DETAIL_BUILDERS.subway rather
+// than the subway_arrivals state key. selectSearchResult looks results up by `kind`.
+function searchCameraResults(query) {
+  return searchRecordsFor("dot_cameras")
+    .filter((record) => record.name && record.name.toLowerCase().includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, SEARCH_MAX_RESULTS_PER_KIND)
+    .map((record) => ({
+      kind: "cameras",
+      label: record.name,
+      sublabel: [record.area, record.is_online ? "online" : "offline"]
+        .filter(Boolean)
+        .join(" · "),
+      lat: record.lat,
+      lon: record.lon,
+      record,
+    }));
+}
+
+// Bus routes have no single named record to fly to (BusVehicle.route_id) -- a route is
+// however many vehicles are currently out on it. This groups already-fetched mta_bus
+// vehicles by short route label (busRouteLabel, map-layers.js -- the same helper that
+// colors bus markers and titles the bus detail panel, not a second parser) and returns
+// one result per matching route, kind "bus_route", carrying that label instead of a
+// lat/lon/record. selectSearchResult branches on this kind to highlight the route on
+// the map rather than flying to a point.
+function searchBusRouteResults(query) {
+  const vehicleCountByRoute = new Map(); // short route label -> live vehicle count
+  for (const record of searchRecordsFor("mta_bus")) {
+    if (!record.route_id) continue;
+    const label = busRouteLabel(record.route_id);
+    if (!label.toLowerCase().includes(query)) continue;
+    vehicleCountByRoute.set(label, (vehicleCountByRoute.get(label) || 0) + 1);
+  }
+  return Array.from(vehicleCountByRoute.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(0, SEARCH_MAX_RESULTS_PER_KIND)
+    .map(([route, count]) => ({
+      kind: "bus_route",
+      label: `${route} bus route`,
+      sublabel: `${count} bus${count === 1 ? "" : "es"} live now`,
+      route,
+    }));
+}
+
 function runSearch(rawQuery) {
   const query = searchNormalize(rawQuery);
   if (!query) return [];
-  return [...searchSubwayResults(query), ...searchCitibikeResults(query)];
+  return [
+    ...searchSubwayResults(query),
+    ...searchCitibikeResults(query),
+    ...searchCameraResults(query),
+    ...searchBusRouteResults(query),
+  ];
 }
 
+const SEARCH_KIND_LABELS = {
+  subway: "Subway",
+  citibike: "Citi Bike",
+  cameras: "DOT Camera",
+  bus_route: "Bus Route",
+};
+
 function searchKindLabel(kind) {
-  return kind === "subway" ? "Subway" : "Citi Bike";
+  return SEARCH_KIND_LABELS[kind] || kind;
 }
 
 function renderSearchResults(results, query) {
@@ -112,10 +182,42 @@ function renderSearchResults(results, query) {
     .join("");
 }
 
+// A bus-route search result implies the user wants to see that route on the map, and
+// the mta_bus layer defaults to off (map-layers.js's FEEDS entry, same as dot_cameras
+// and dohmh_inspections -- dense data, opt-in). Auto-enabling it here (rather than just
+// documenting "check the Buses box first") is the same reasoning bikeLayer's own
+// zoom-declutter already follows: don't make the user discover a second manual step to
+// see the result of the thing they just asked for. Mirrors buildPanel()'s checkbox
+// wiring (status-panel.js) so the sidebar checkbox itself reflects the change, not just
+// the internal state.
+function enableBusLayer() {
+  const entry = state.get("mta_bus");
+  if (!entry || entry.visible) return;
+  entry.visible = true;
+  const checkbox = el("toggle-mta_bus");
+  if (checkbox) checkbox.checked = true;
+}
+
+// The one write site for the shared `highlightedBusRoute` (state.js), mirroring
+// alerts-banner.js's selectRoute(): selecting the already-highlighted route clears it
+// (second selection = revert), selecting a different one replaces it. No flyTo here --
+// unlike the other three kinds, a bus route isn't one point, so the map stays put and
+// busLayer() (map-layers.js) re-renders in place to bring that route's vehicles forward.
+function selectBusRouteResult(result) {
+  highlightedBusRoute = highlightedBusRoute === result.route ? null : result.route;
+  enableBusLayer();
+  if (typeof renderLayers === "function") renderLayers();
+}
+
 // Same handoff handleMapClick (detail-panel.js) already uses for a clicked marker: look
 // the record's kind up in the shared DETAIL_BUILDERS table rather than building a
-// bespoke subway/citibike detail view just for search results.
+// bespoke subway/citibike/camera detail view just for search results.
 function selectSearchResult(result) {
+  if (result.kind === "bus_route") {
+    selectBusRouteResult(result);
+    clearSearch();
+    return;
+  }
   if (map) {
     map.flyTo({ center: [result.lon, result.lat], zoom: SEARCH_FLYTO_ZOOM });
   }

@@ -70,6 +70,11 @@
    citibike layer icons, so a search result's kind badge visually matches its map pin. */
 .search-result-kind[data-kind="subway"] { color: #f4d35e; border-color: #f4d35e; }
 .search-result-kind[data-kind="citibike"] { color: #104281; border-color: #104281; }
+/* Matches layers-panel.css's LAYER_ICON accent for dot_cameras (status-panel.js's
+   MUTED_INK) and mta_bus (subway_arrivals' ROUTE_COLORS fallback), so a search result's
+   kind badge visually matches its map pin, same convention as subway/citibike above. */
+.search-result-kind[data-kind="cameras"] { color: #898781; border-color: #898781; }
+.search-result-kind[data-kind="bus_route"] { color: #f4d35e; border-color: #f4d35e; }
 
 .search-result-text {
   display: flex;

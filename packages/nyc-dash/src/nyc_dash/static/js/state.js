@@ -35,3 +35,13 @@ const BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"];
 // reason as highlightedRoute above: it is read and written from more than one place
 // with no import machinery to share it otherwise.
 let selectedBorough = "all";
+
+// Set by search.js when a bus-route search result (e.g. "M15") is selected, read by
+// map-layers.js's busLayer() to bring that route's vehicles to full opacity and a
+// larger radius while every other bus dims. Deliberately its own variable rather than
+// reusing highlightedRoute above: that one means "this subway line, from the alerts
+// banner" and this one means "this bus route, from search" -- the two features happen
+// to share a mechanism (a plain global read by a layer builder's accessors) but are
+// conceptually distinct selections a user could want independently, so one write site
+// must never clobber the other's. null means "no bus route highlighted".
+let highlightedBusRoute = null;
