@@ -55,8 +55,8 @@ class FeedName(StrEnum):
     NYC_311 = "nyc_311"
     DOHMH_INSPECTIONS = "dohmh_inspections"
     WEATHER = "weather"
-    MTA_BUS = "mta_bus"  # deferred: key-gated, adapter stub only
-    NY511_CAMERAS = "ny511_cameras"  # deferred: key-gated, adapter stub only
+    MTA_BUS = "mta_bus"  # deferred: key-gated (MTA_BUS_TIME_API_KEY)
+    NY511_CAMERAS = "ny511_cameras"  # deferred: key-gated (NY511_API_KEY)
     DENSITY = "density"  # derived by nyc-vision, served from DuckDB
     WAREHOUSE = "warehouse"  # query_warehouse tool
 
