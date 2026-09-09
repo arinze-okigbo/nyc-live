@@ -22,6 +22,16 @@ const GRADE_A = [46, 204, 113]; // --fresh #2ecc71
 const GRADE_B = [244, 162, 89]; // --stale #f4a259
 const GRADE_C = [239, 71, 111]; // --error #ef476f
 
+// Hover feedback and update-animation tuning. HOVER_HIGHLIGHT reuses plain white (already
+// on the palette as the stroke color below) blended in by deck.gl's autoHighlight, so
+// hovering a marker brightens it instead of introducing a new hue. UPDATE_TRANSITION_MS
+// is how long a marker takes to ease into a new value on refresh, applied only where the
+// underlying quantity itself moves continuously (e.g. bike-fill ratio) -- never on data
+// that is supposed to jump instantly (a train's route, a letter grade), where an eased
+// blend would just show a muddy in-between color for no benefit.
+const HOVER_HIGHLIGHT = [255, 255, 255, 100];
+const UPDATE_TRANSITION_MS = 600;
+
 function gradeColor(grade) {
   if (grade === "A") return GRADE_A;
   if (grade === "B") return GRADE_B;
@@ -69,11 +79,15 @@ function subwayLayer(envelope) {
     id: "subway",
     data,
     pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
     getRadius: 70,
     radiusMinPixels: 3,
     radiusMaxPixels: 12,
+    // Route color is a categorical jump (this train's next stop can put it on a
+    // different line entirely), not a value that eases -- no transition here.
     getFillColor: (d) => ROUTE_COLORS[d.route_id] || [244, 211, 94],
     getLineColor: [10, 12, 16],
     lineWidthMinPixels: 1,
@@ -88,6 +102,10 @@ function densityLayer(envelope) {
   return new deck.HeatmapLayer({
     id: "density",
     data,
+    // Not pickable: this is the one purely-informational layer, so it should read as
+    // background context rather than compete with the clickable marker layers above it.
+    // A touch of extra transparency is enough to make that hierarchy legible at a glance.
+    opacity: 0.75,
     getPosition: (d) => [d.lon, d.lat],
     getWeight: (d) => (d.person_mean || 0) + (d.vehicle_mean || 0),
     radiusPixels: 55,
@@ -104,6 +122,8 @@ function layer311(envelope) {
     id: "nyc311",
     data,
     pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
     getRadius: 40,
@@ -123,6 +143,8 @@ function bikeLayer(envelope) {
     id: "citibike",
     data,
     pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
     getRadius: (d) => 26 + 3 * Math.sqrt(d.capacity || d.bikes_available + d.docks_available || 1),
@@ -134,6 +156,16 @@ function bikeLayer(envelope) {
       const ratio = d.bikes_available / total;
       return [...lerpColor(SEQUENTIAL_BLUE_LIGHT, SEQUENTIAL_BLUE_DARK, ratio), 190];
     },
+    getLineColor: [255, 255, 255, 140],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    // Bike-fill ratio and station size both move continuously between refreshes (a few
+    // bikes checked in or out), so easing them reads as "the count updated" rather than
+    // a flicker -- unlike the categorical jumps on subway/grade colors below.
+    transitions: {
+      getFillColor: UPDATE_TRANSITION_MS,
+      getRadius: UPDATE_TRANSITION_MS,
+    },
   });
 }
 
@@ -144,12 +176,20 @@ function cameraLayer(envelope) {
     id: "cameras",
     data,
     pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
     getRadius: 25,
     radiusMinPixels: 2,
     radiusMaxPixels: 6,
+    getLineColor: [255, 255, 255, 120],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    // Online/offline only ever fades between two closely related grays, so easing this
+    // (a camera coming back up) reads as a status change settling in, not a muddy blend.
     getFillColor: (d) => (d.is_online ? [141, 153, 174, 200] : [90, 96, 110, 140]),
+    transitions: { getFillColor: UPDATE_TRANSITION_MS },
   });
 }
 
@@ -160,11 +200,15 @@ function inspectionsLayer(envelope) {
     id: "dohmh",
     data,
     pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
     getRadius: 30,
     radiusMinPixels: 2,
     radiusMaxPixels: 8,
+    // A/B/C is a categorical jump (like subway route color): easing red into green
+    // through the palette would show a false intermediate grade, so no transition here.
     getFillColor: (d) => [...gradeColor(d.grade), 200],
     getLineColor: [255, 255, 255, 100],
     lineWidthMinPixels: 1,
