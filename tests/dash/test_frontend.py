@@ -362,7 +362,7 @@ def test_camera_search_result_selection_flies_to_it_and_opens_its_detail_panel()
     """A selected camera result must go through the exact same flyTo + DETAIL_BUILDERS
     handoff selectSearchResult already uses for subway/citibike, not a bespoke path."""
     search_js = (STATIC_DIR / "js" / "search.js").read_text()
-    assert "function searchCameraResults(query)" in search_js
+    assert "function searchCameraResults(query, origin)" in search_js
     assert "DETAIL_BUILDERS[result.kind]" in search_js
     detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
     assert "cameras: cameraDetail," in detail_js
@@ -414,6 +414,27 @@ def test_selecting_a_bus_route_auto_enables_the_bus_layer() -> None:
     assert 'state.get("mta_bus")' in search_js
     assert 'el("toggle-mta_bus")' in search_js
     assert "entry.visible = true;" in search_js
+
+
+def test_search_ranks_point_based_results_by_distance_from_the_map_center() -> None:
+    """Subway/Citi Bike/camera results must be ranked nearest-to-the-current-map-center
+    first (not the previous arbitrary/alphabetical order), computed fresh from
+    map.getCenter() each time a search runs; bus routes have no single point and must
+    keep their own ordering untouched."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "function haversineDistanceMeters(lat1, lon1, lat2, lon2)" in search_js
+    assert "function currentSearchOrigin()" in search_js
+    assert "map.getCenter()" in search_js
+    assert "function sortByDistance(records, origin)" in search_js
+    assert ".sort((a, b) => a.distanceM - b.distanceM)" in search_js
+    # the three point-based kinds route through the shared distance sort...
+    assert "sortByDistance(Array.from(bestByStop.values()), origin)" in search_js
+    assert search_js.count("sortByDistance(matches, origin)") == 2  # citibike + cameras
+    # ...bus routes explicitly do not (no lat/lon on a route, alphabetical unchanged).
+    bus_fn = search_js[search_js.index("function searchBusRouteResults(query) {") :]
+    bus_fn = bus_fn[: bus_fn.index("\n}\n")]
+    assert "sortByDistance" not in bus_fn
+    assert ".sort((a, b) => a[0].localeCompare(b[0]))" in bus_fn
 
 
 def test_search_kind_badge_css_exists_for_cameras_and_bus_routes() -> None:

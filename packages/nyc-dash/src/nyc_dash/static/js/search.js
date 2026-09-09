@@ -4,7 +4,7 @@
  * the map; or find a bus route by number and highlight its live vehicles on the map.
  * Entirely client-side over data the app already polls -- no new backend endpoint.
  *
- * Depends on: utils.js (el, escapeHtml), state.js (state, map, highlightedBusRoute),
+ * Depends on: utils.js (el, escapeHtml), state.js (state, map, highlightedBusRoute, NYC),
  * map-layers.js (busRouteLabel, renderLayers), detail-panel.js (DETAIL_BUILDERS).
  * Self-initializes on DOMContentLoaded like app.js does, since this file must not
  * require app.js to know about it.
@@ -37,6 +37,61 @@ function searchNormalize(text) {
   return text.trim().toLowerCase();
 }
 
+// Haversine distance in meters. City-scale distances are small enough that an
+// equirectangular approximation would be indistinguishable in practice, but Haversine
+// is barely more code and gives the real great-circle distance with no approximation
+// error to reason about near the edges of the metro area (Staten Island to the Bronx is
+// still "the same map"), so there's no reason to reach for the cheaper shortcut here.
+// No external geo library -- this file has zero dependencies and a five-line formula
+// isn't worth gaining one.
+const EARTH_RADIUS_M = 6371000;
+
+function toRadians(degrees) {
+  return (degrees * Math.PI) / 180;
+}
+
+function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const sinHalfLat = Math.sin(dLat / 2);
+  const sinHalfLon = Math.sin(dLon / 2);
+  const a =
+    sinHalfLat * sinHalfLat +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * sinHalfLon * sinHalfLon;
+  return 2 * EARTH_RADIUS_M * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Where "nearest" is measured from: the map's current center, read fresh every time a
+// search actually runs. That's handleSearchInput's existing debounce callback, not a
+// new "resort on map pan" listener -- panning while a result list is already open won't
+// live-resort it until the next keystroke, which is the same debounce-driven cadence
+// this file already uses for re-filtering, not a new one. Falls back to the app's
+// default NYC view (state.js's `NYC`, the same constant app.js itself falls back to for
+// the initial map view) on the off chance this runs before the map finishes constructing.
+function currentSearchOrigin() {
+  if (map && typeof map.getCenter === "function") {
+    const center = map.getCenter();
+    return { lat: center.lat, lon: center.lng };
+  }
+  return { lat: NYC.latitude, lon: NYC.longitude };
+}
+
+// Shared by all three point-based kinds (subway, Citi Bike, cameras): sorts
+// already-filtered records nearest-first from `origin` *before* truncating to
+// SEARCH_MAX_RESULTS_PER_KIND, so a distant alphabetical match can never bump a closer
+// one out of the visible list. Bus routes (searchBusRouteResults) have no single
+// lat/lon -- a route is many live vehicles, not one point -- so they're intentionally
+// left out of this and keep their existing alphabetical ordering.
+function sortByDistance(records, origin) {
+  return records
+    .map((record) => ({
+      record,
+      distanceM: haversineDistanceMeters(origin.lat, origin.lon, record.lat, record.lon),
+    }))
+    .sort((a, b) => a.distanceM - b.distanceM)
+    .map((entry) => entry.record);
+}
+
 // Reads the same `state` map every layer builder reads (map-layers.js), so search never
 // has its own copy of the data or its own idea of what "fresh" means: an errored feed
 // contributes zero results here for the same reason it draws nothing on the map.
@@ -50,7 +105,7 @@ function searchRecordsFor(key) {
 // arriving train. A search result should be one per station: keep only the
 // soonest-arriving train for each stop_id, so "station name" maps to exactly one pin to
 // fly to and exactly one detail panel to open (that train's, same as clicking it would).
-function searchSubwayResults(query) {
+function searchSubwayResults(query, origin) {
   const bestByStop = new Map(); // stop_id -> soonest-eta record
   for (const record of searchRecordsFor("subway_arrivals")) {
     if (!record.stop_name || record.lat == null || record.lon == null) continue;
@@ -58,8 +113,7 @@ function searchSubwayResults(query) {
     const existing = bestByStop.get(record.stop_id);
     if (!existing || record.eta_s < existing.eta_s) bestByStop.set(record.stop_id, record);
   }
-  return Array.from(bestByStop.values())
-    .sort((a, b) => a.stop_name.localeCompare(b.stop_name))
+  return sortByDistance(Array.from(bestByStop.values()), origin)
     .slice(0, SEARCH_MAX_RESULTS_PER_KIND)
     .map((record) => ({
       kind: "subway",
@@ -71,10 +125,11 @@ function searchSubwayResults(query) {
     }));
 }
 
-function searchCitibikeResults(query) {
-  return searchRecordsFor("citibike")
-    .filter((record) => record.name && record.name.toLowerCase().includes(query))
-    .sort((a, b) => a.name.localeCompare(b.name))
+function searchCitibikeResults(query, origin) {
+  const matches = searchRecordsFor("citibike").filter(
+    (record) => record.name && record.name.toLowerCase().includes(query)
+  );
+  return sortByDistance(matches, origin)
     .slice(0, SEARCH_MAX_RESULTS_PER_KIND)
     .map((record) => ({
       kind: "citibike",
@@ -90,10 +145,11 @@ function searchCitibikeResults(query) {
 // (detail-panel.js: `cameras: cameraDetail`), not the dot_cameras state/feed key --
 // same as how searchSubwayResults' "subway" kind matches DETAIL_BUILDERS.subway rather
 // than the subway_arrivals state key. selectSearchResult looks results up by `kind`.
-function searchCameraResults(query) {
-  return searchRecordsFor("dot_cameras")
-    .filter((record) => record.name && record.name.toLowerCase().includes(query))
-    .sort((a, b) => a.name.localeCompare(b.name))
+function searchCameraResults(query, origin) {
+  const matches = searchRecordsFor("dot_cameras").filter(
+    (record) => record.name && record.name.toLowerCase().includes(query)
+  );
+  return sortByDistance(matches, origin)
     .slice(0, SEARCH_MAX_RESULTS_PER_KIND)
     .map((record) => ({
       kind: "cameras",
@@ -133,13 +189,23 @@ function searchBusRouteResults(query) {
     }));
 }
 
+// Results stay grouped by kind (subway block, then Citi Bike, then cameras, then bus
+// routes) exactly as before -- only the ordering *within* each kind changed, from
+// alphabetical to nearest-first. A single distance-ranked merge across kinds (letting a
+// very close camera outrank a farther subway station) was the other option, but the
+// list already renders a per-row kind badge and groups by kind for a reason: each kind
+// is a different sort of thing to jump to (a station vs. a dock vs. a camera vs. a
+// route), and a user scanning for "the subway station near me named 14 St" would find a
+// kind-interleaved list harder to scan than four short, internally-sorted groups. Kept
+// the existing grouping and only made each group itself distance-aware.
 function runSearch(rawQuery) {
   const query = searchNormalize(rawQuery);
   if (!query) return [];
+  const origin = currentSearchOrigin();
   return [
-    ...searchSubwayResults(query),
-    ...searchCitibikeResults(query),
-    ...searchCameraResults(query),
+    ...searchSubwayResults(query, origin),
+    ...searchCitibikeResults(query, origin),
+    ...searchCameraResults(query, origin),
     ...searchBusRouteResults(query),
   ];
 }
