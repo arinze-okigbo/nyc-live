@@ -28,6 +28,35 @@ const ICONS = {
 
   bus: `<rect x="2" y="3.5" width="12" height="7.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M2 6.7h12M5.2 3.5v3.2M10.8 3.5v3.2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/><circle cx="4.8" cy="12.2" r="1.1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="11.2" cy="12.2" r="1.1" fill="none" stroke="currentColor" stroke-width="1"/>`,
 
+  // The four below are drawn as filled silhouettes rather than in the outline style the
+  // glyphs above use. That is deliberate, not drift: the outline style was drawn for the
+  // 14px sidebar, and on the map an IconLayer marker is only ICON_MIN_PX (15px) across,
+  // where a 1.1-wide interior stroke lands on ~1 screen pixel and greys out. Each of these was
+  // rasterised at 15px and 30px through iconGlyphDataUri (the exact path that ships) and
+  // picked for the reading that survived the 15px pass, filled where an outline collapsed.
+
+  // 511NY events: an impact burst, NOT the traffic cone this started as -- a filled cone
+  // reads as a solid triangle at 15px, one hue away from `alert`'s warning triangle, and
+  // cone-plus-detached-base put a 2-unit base bar on a half-pixel row that washed out to
+  // ~50% grey. The spike radii are deliberately uneven: an even 7- or 8-point star reads
+  // as a sparkle or a sun, an uneven one reads as an impact, and neither reads as a triangle.
+  incident: `<path d="M7.43 1.52 9.03 5.29 11.7 4.48 10.76 7.11 14.04 8.83 10.42 9.6 11.32 13.59 8.25 10.89 6.2 12.77 5.9 10 2.19 9.87 5.13 7.6 2.58 4.41 6.52 5.51Z" fill="currentColor" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>`,
+
+  // Elevator/escalator outages: the ISO up/down arrow pair. An elevator-car outline with
+  // arrows beside it shrank the arrows to ~2px nubs, leaving a near-featureless rectangle
+  // of the same family as `bus`/`subway`; two arrows at full height read on their own.
+  elevator: `<path d="M4.4 1.6 7.6 6.3H1.2L4.4 1.6Z" fill="currentColor"/><rect x="3.1" y="5.7" width="2.6" height="8.7" rx="0.5" fill="currentColor"/><path d="M11.6 14.4 8.4 9.7h6.4l-3.2 4.7Z" fill="currentColor"/><rect x="10.3" y="1.6" width="2.6" height="8.7" rx="0.5" fill="currentColor"/>`,
+
+  // Air quality: haze cloud over suspended particulate. Wind-curl lines (the other obvious
+  // choice) merged into an unreadable smear at 15px. The three particles are evenly spaced
+  // on one row on purpose -- scattering them, or dropping to two, reads as a face.
+  air_quality: `<circle cx="5.9" cy="6.1" r="2.7" fill="currentColor"/><circle cx="10" cy="5.3" r="3.4" fill="currentColor"/><rect x="3.2" y="6.1" width="9.6" height="3.4" rx="1.7" fill="currentColor"/><circle cx="4.6" cy="13" r="1.15" fill="currentColor"/><circle cx="8" cy="13" r="1.15" fill="currentColor"/><circle cx="11.4" cy="13" r="1.15" fill="currentColor"/>`,
+
+  // NYC Ferry: hull, deckhouse, funnel. Outlining the hull turned it into a basket at 15px
+  // (the hollow interior is what a bucket looks like); the funnel is what keeps the filled
+  // version reading as a vessel rather than a bowl.
+  ferry: `<path d="M1.9 9.2h12.2l-2.2 4.4H4.1L1.9 9.2Z" fill="currentColor"/><path d="M4.9 8.6V4.8a.8.8 0 0 1 .8-.8h4.6a.8.8 0 0 1 .8.8v3.8H4.9Z" fill="currentColor"/><rect x="7.4" y="1.4" width="1.3" height="2.8" rx="0.65" fill="currentColor"/>`,
+
   alert: `<path d="M8 2.2 14.3 13a.9.9 0 0 1-.8 1.4H2.5a.9.9 0 0 1-.8-1.4L8 2.2Z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M8 6.4v3M8 11.6h.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>`,
 
   chart: `<path d="M2.5 13.5h11M4 13V9.5M7.3 13V6M10.6 13V8M13.9 13V4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`,

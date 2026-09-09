@@ -1083,3 +1083,67 @@ def test_long_running_lists_do_not_scroll_chain_into_the_page() -> None:
         rule = css[css.index(block) :]
         rule = rule[: rule.index("}")]
         assert "overscroll-behavior: contain;" in rule, block
+
+
+# -- icons.js glyph invariants -------------------------------------------------
+
+ICONS_JS = (STATIC_DIR / "js" / "icons.js").read_text()
+# Every `  key: `...`,` entry in the ICONS table. Parsed rather than string-searched
+# because the two colour rules below must apply to the glyph bodies ONLY: the file also
+# contains a legitimate literal white (iconGlyphDataUri's `color="#ffffff"`, which is
+# what resolves the glyphs' own currentColor when they are rasterised into the atlas).
+ICON_GLYPHS = dict(re.findall(r"^  ([a-z0-9_]+): `([^`]*)`,$", ICONS_JS, flags=re.MULTILINE))
+# The three feeds that shipped with live data and no glyph (ny511_events,
+# mta_elevator_outages, air_quality), plus NYC Ferry.
+NEW_GLYPH_KEYS = ("incident", "elevator", "air_quality", "ferry")
+
+
+def test_icons_table_parses_and_covers_the_glyphless_feeds() -> None:
+    assert len(ICON_GLYPHS) >= 13, "the ICONS entry regex stopped matching the table"
+    for key in NEW_GLYPH_KEYS:
+        assert key in ICON_GLYPHS, key
+
+
+def test_every_glyph_paints_only_with_currentcolor() -> None:
+    """ICON_ATLAS_KEYS is Object.keys(ICONS), so each of these is packed into the runtime
+    sprite atlas and rasterised as a WHITE mask, then tinted by the IconLayer's own
+    getColor (mask: true) -- and recoloured in the sidebar by plain CSS `color`. A literal
+    colour anywhere in a glyph body survives both and freezes that marker to a baked-in
+    hex, so `currentColor` (or `none`) is the only paint value allowed."""
+    for key, glyph in ICON_GLYPHS.items():
+        assert "currentColor" in glyph, key
+        paints = re.findall(r'(?:^|\s)(?:fill|stroke)="([^"]*)"', glyph)
+        assert paints, key
+        assert set(paints) <= {"currentColor", "none"}, (key, sorted(set(paints)))
+        assert "#" not in glyph, key
+        for literal in ("rgb(", "rgba(", "hsl(", "url(", "white", "black"):
+            assert literal not in glyph, (key, literal)
+
+
+def test_every_glyph_is_a_bare_16x16_fragment() -> None:
+    """No wrapper <svg>: icon() and iconGlyphDataUri each supply their own (with different
+    width/height -- 14px in the sidebar, ICON_ATLAS_CELL in the atlas), so a glyph that
+    carried its own would nest and render at the wrong size in one of the two."""
+    for key, glyph in ICON_GLYPHS.items():
+        assert "<svg" not in glyph, key
+        assert "viewBox" not in glyph, key
+    assert 'viewBox="0 0 16 16" width="14" height="14"' in ICONS_JS  # icon()
+    assert 'viewBox="0 0 16 16" ` +' in ICONS_JS  # iconGlyphDataUri
+    assert "const ICON_ATLAS_KEYS = Object.keys(ICONS);" in ICONS_JS
+
+
+def test_new_glyphs_keep_the_sets_stroke_weights() -> None:
+    """A new glyph may be a filled silhouette (the 15px map size eats fine interior
+    strokes), but where it does stroke, it must use a weight the set already uses --
+    otherwise the sidebar column, where all 13 sit together at 14px, reads as two
+    different icon sets."""
+    established = {
+        width
+        for key, glyph in ICON_GLYPHS.items()
+        if key not in NEW_GLYPH_KEYS
+        for width in re.findall(r'stroke-width="([\d.]+)"', glyph)
+    }
+    assert established, "no stroke-width found in the pre-existing glyphs"
+    for key in NEW_GLYPH_KEYS:
+        for width in re.findall(r'stroke-width="([\d.]+)"', ICON_GLYPHS[key]):
+            assert width in established, (key, width, sorted(established))
