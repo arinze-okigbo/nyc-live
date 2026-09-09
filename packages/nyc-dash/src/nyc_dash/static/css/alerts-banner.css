@@ -73,6 +73,16 @@
 
 .alert-item:last-child { margin-bottom: 0; }
 
+/* Honest overflow notice (alerts-banner.js's truncationNoticeHtml): appended after the
+   real alerts only when the upstream total exceeds ALERTS_ENDPOINT's fetch limit.
+   Muted and non-interactive (no chips, no click target) so it reads as a system note,
+   not another alert. */
+.alert-item--more {
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+}
+
 .alert-routes {
   display: flex;
   flex-wrap: wrap;

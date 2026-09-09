@@ -25,7 +25,13 @@
 // cadence instead of piggybacking on REFRESH_S (the map-layer poll/stream interval) --
 // frequent enough to feel live without hammering the endpoint.
 const ALERTS_POLL_MS = 60000;
-const ALERTS_ENDPOINT = "/api/mta_subway_alerts?limit=50";
+// 200 comfortably covers a normal-to-bad service day (observed live: 174 active
+// system-wide) without paging -- each alert record is a few short strings, so the
+// payload cost of fetching more per request is negligible next to the alternative of
+// silently hiding some of them. Kept as a real cap rather than "no limit" so a truly
+// extreme incident still degrades honestly (see truncationNotice below) instead of an
+// unbounded fetch/render.
+const ALERTS_ENDPOINT = "/api/mta_subway_alerts?limit=200";
 
 // Matches the fallback color subwayLayer() (map-layers.js) uses for a route_id it
 // doesn't recognize, so a chip for an unmapped route (e.g. the Staten Island Railway,
@@ -116,6 +122,18 @@ function setAlertsCount(text, status) {
   badge.dataset.status = status;
 }
 
+// The envelope's own `total_before_filter` (Envelope, contracts.py) is the true count
+// of active alerts upstream, independent of the `limit` query param this module sends
+// -- `records.length` on its own is just the page size and must never be presented as
+// the total (that's the bug this function exists to prevent). Falls back to
+// records.length only if an older/malformed envelope omits the field, so the badge
+// never breaks rather than lying.
+function totalActiveCount(envelope) {
+  return typeof envelope.total_before_filter === "number"
+    ? envelope.total_before_filter
+    : envelope.records.length;
+}
+
 // "stale" still shows real, last-good data plus when it was good -- same rule every
 // map layer follows (see setPill in status-panel.js) -- never a fabricated refresh.
 function staleSuffix(envelope) {
@@ -135,7 +153,7 @@ function renderAlertsError(envelope) {
 }
 
 function renderAlertsEmpty(envelope) {
-  setAlertsCount(`0 active${staleSuffix(envelope)}`, envelope.status);
+  setAlertsCount(`${totalActiveCount(envelope)} active${staleSuffix(envelope)}`, envelope.status);
   const list = el("alerts-list");
   list.innerHTML = "";
   list.hidden = true;
@@ -145,11 +163,31 @@ function renderAlertsEmpty(envelope) {
   empty.textContent = "No active alerts.";
 }
 
+// A non-interactive list item, appended after the real alerts, that says exactly how
+// many active alerts exist beyond the ones fetched -- never just "50 active" when the
+// upstream total (envelope.total_before_filter) is higher. Empty string (renders
+// nothing) once envelope.truncated is false, which is the normal case now that
+// ALERTS_ENDPOINT's limit (200) comfortably exceeds a real-world total (174 observed
+// live); this only shows up again if a future incident pushes the true count past 200.
+function truncationNoticeHtml(envelope, shownCount, totalCount) {
+  if (!envelope.truncated || shownCount >= totalCount) return "";
+  const hiddenCount = totalCount - shownCount;
+  return `<li class="alert-item alert-item--more">+${hiddenCount} more active alert${
+    hiddenCount === 1 ? "" : "s"
+  } not shown</li>`;
+}
+
 function renderAlertsList(envelope) {
   const records = sortedByMostRecent(envelope.records);
-  setAlertsCount(`${records.length} active${staleSuffix(envelope)}`, envelope.status);
+  const totalCount = totalActiveCount(envelope);
+  const countText =
+    envelope.truncated && records.length < totalCount
+      ? `${totalCount} active (showing ${records.length})`
+      : `${totalCount} active`;
+  setAlertsCount(`${countText}${staleSuffix(envelope)}`, envelope.status);
   const list = el("alerts-list");
-  list.innerHTML = records.map(alertItemHtml).join("");
+  list.innerHTML =
+    records.map(alertItemHtml).join("") + truncationNoticeHtml(envelope, records.length, totalCount);
   list.hidden = false;
   const empty = el("alerts-empty");
   empty.hidden = true;
