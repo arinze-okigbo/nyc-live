@@ -476,4 +476,22 @@ main {
     align-items: center;
     justify-content: center;
   }
+
+  /* positionWeatherPopover (status-panel.js) sets only an inline `left` from the
+     badge's getBoundingClientRect() -- it has no notion of how much room is left
+     on the right, so the popover's own default width (min(260px, 100vw-24px) above)
+     can still push past the viewport's right edge on narrower phones (measured:
+     overflows ~32px at 320px width, and is within 8px of doing so at 360px --
+     both still inside this same phone breakpoint, just narrower than the ~390px
+     the 480px cutoff is nominally tuned for). Fixed with `right` + `width: auto`
+     rather than touching the JS: `left` (inline) and `right` (here) are different
+     properties, so the browser solves the box's width from the *actual* remaining
+     viewport space instead of a guessed constant -- no !important needed to beat
+     the inline `left`, since nothing here sets `left`. At wider phone widths this
+     just makes the popover a bit wider than the 260px default, still comfortably
+     inside the badge-anchored left edge and this same 12px right margin. */
+  .weather-forecast-popover {
+    right: 12px;
+    width: auto;
+  }
 }
