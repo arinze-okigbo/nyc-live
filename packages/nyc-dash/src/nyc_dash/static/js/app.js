@@ -47,6 +47,7 @@ function initMap() {
 
 function start() {
   buildPanel();
+  initAlertsBanner();
   initMap();
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") closeDetailPanel();

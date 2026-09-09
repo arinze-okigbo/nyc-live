@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="/css/chrome.css" />
     <link rel="stylesheet" href="/css/layers-panel.css" />
     <link rel="stylesheet" href="/css/detail-panel.css" />
+    <link rel="stylesheet" href="/css/alerts-banner.css" />
     <!-- Pinned CDN versions. No API key is used or needed: the basemap style is
          OpenFreeMap's keyless "liberty" style. -->
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
@@ -19,10 +20,13 @@
     <!-- No build step: plain scripts sharing one global scope, loaded in dependency
          order. map-layers.js's FEEDS array references layer builders from that same
          file at construction time, so it and everything after must load after
-         utils.js/state.js; app.js (boot) must load last. -->
+         utils.js/state.js; alerts-banner.js reads ROUTE_COLORS from map-layers.js, so
+         it loads right after; app.js (boot) must load last. -->
     <script defer src="/js/utils.js"></script>
+    <script defer src="/js/icons.js"></script>
     <script defer src="/js/state.js"></script>
     <script defer src="/js/map-layers.js"></script>
+    <script defer src="/js/alerts-banner.js"></script>
     <script defer src="/js/status-panel.js"></script>
     <script defer src="/js/detail-panel.js"></script>
     <script defer src="/js/data-sync.js"></script>

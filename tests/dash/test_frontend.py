@@ -17,14 +17,16 @@ INDEX = (STATIC_DIR / "index.html").read_text()
 # assertions just need "this string exists somewhere in the app", not which file.
 JS_FILES = [
     "utils.js",
+    "icons.js",
     "state.js",
     "map-layers.js",
+    "alerts-banner.js",
     "status-panel.js",
     "detail-panel.js",
     "data-sync.js",
     "app.js",
 ]
-CSS_FILES = ["tokens.css", "chrome.css", "layers-panel.css", "detail-panel.css"]
+CSS_FILES = ["tokens.css", "chrome.css", "layers-panel.css", "detail-panel.css", "alerts-banner.css"]
 
 APP_JS = "\n".join((STATIC_DIR / "js" / name).read_text() for name in JS_FILES)
 STYLE = "\n".join((STATIC_DIR / "css" / name).read_text() for name in CSS_FILES)

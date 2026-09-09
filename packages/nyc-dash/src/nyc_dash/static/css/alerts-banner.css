@@ -1,0 +1,96 @@
+/*
+ * Service Alerts sidebar section (alerts-banner.js). Inserted at runtime as the first
+ * child of #panel, above the existing "Layers" heading (see layers-panel.css, which
+ * owns #panel itself). Reads color tokens from tokens.css, same as every other
+ * stylesheet on this page.
+ */
+
+.alerts-details {
+  margin: 0 0 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.alerts-details summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  list-style: none;
+}
+
+.alerts-details summary::-webkit-details-marker { display: none; }
+
+.alerts-details summary:hover { color: var(--text); }
+
+/* Icon comes from icon("alert") in icons.js; recolored via currentColor like every
+   other icon on the page (see .icon in tokens.css). */
+.alerts-details summary .icon { color: inherit; }
+
+.alerts-count {
+  margin-left: auto;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  padding: 1px 8px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--muted);
+}
+
+.alerts-count[data-status="fresh"] { color: var(--fresh); border-color: var(--fresh); }
+.alerts-count[data-status="stale"] { color: var(--stale); border-color: var(--stale); }
+.alerts-count[data-status="error"] { color: var(--error); border-color: var(--error); }
+
+.alerts-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.alerts-empty[data-status="error"] { color: var(--error); }
+
+.alerts-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.alert-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.alert-item:last-child { margin-bottom: 0; }
+
+.alert-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+/* Background is set inline per-route from map-layers.js's ROUTE_COLORS (alerts-banner.js
+   computes a readable text color to go with it), so this rule only supplies shape. */
+.route-chip {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.alert-header { color: var(--text); overflow-wrap: anywhere; }
+
+.alert-meta { margin-top: 3px; color: var(--muted); font-size: 11px; }
