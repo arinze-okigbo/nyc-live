@@ -16,9 +16,11 @@ from datetime import timedelta
 from pathlib import Path
 
 import httpx
+from fastapi.testclient import TestClient
 from fastmcp import Client
 
 from nyc_dash.api import health_payload
+from nyc_dash.app import create_app
 from nyc_live.config import Settings
 from nyc_live.contracts import FeedName
 from nyc_live.feeds.transit import (
@@ -27,11 +29,11 @@ from nyc_live.feeds.transit import (
     SubwayShapesAdapter,
     reset_raw_cache,
 )
-from nyc_live.services import Services, density_now, open_services, warehouse
+from nyc_live.services import Services, build_services, density_now, open_services, warehouse
 from nyc_live.store import Store
 from nyc_mcp.server import create_server
 from nyc_vision.report import cameras_covered
-from tests.integration.conftest import CAM_A, REPO_ROOT, parse_iso, seed_density
+from tests.integration.conftest import CAM_A, REPO_ROOT, check_envelope, parse_iso, seed_density
 
 # --------------------------------------------------------------------------- feed_health
 
@@ -385,3 +387,81 @@ async def test_alerts_and_shapes_agree_on_the_route_id_vocabulary() -> None:
         assert route_id and " " not in route_id and "_" not in route_id, (
             f"route_id {route_id!r} does not look like a bare NYCT route code"
         )
+
+
+# --------------------------------------------------------------------------- alerts count fix
+
+
+async def test_mta_subway_alerts_endpoint_reports_the_true_total_when_the_limit_truncates(
+    integration_settings: Settings,
+) -> None:
+    """Regression coverage for `alerts-banner.js`'s "50 active" bug: the banner now reads
+    `envelope.total_before_filter`/`envelope.truncated` instead of `records.length`
+    (`totalActiveCount()`, `renderAlertsList()` in alerts-banner.js). That fix lives
+    entirely in the frontend, so it is only as good as the `Envelope` the real
+    `/api/mta_subway_alerts` endpoint actually serves; `tests/dash/test_frontend.py`
+    checks the JS string, and `conftest.check_envelope` only checks that
+    `total_before_filter` is present, not that it equals the true pre-limit count while
+    `records` is capped. Nothing else in this suite drives that endpoint through a
+    `limit` small enough to truncate a `fresh` (not `error`) envelope.
+
+    Exercises the real stack: real `SubwayAlertsAdapter` against a real recorded fixture
+    (`tests/fixtures/transit/subway-alerts.pb`, already checked in by feed-transit) served
+    from a real loopback socket, through the real `CachedFeed`
+    (`total_before_filter=len(snap.records)`, `cache.py`) and the real
+    `nyc_live.services.nearby()` limit/truncate logic, out through the real FastAPI route
+    (`nyc_dash.api._subway_alerts`) -- the same call chain a browser hitting
+    `/api/mta_subway_alerts?limit=200` takes.
+    """
+    alerts_body = (TRANSIT_FIXTURES / "subway-alerts.pb").read_bytes()
+    gtfs_body = (TRANSIT_FIXTURES / "gtfs_subway_trimmed.zip").read_bytes()
+    reset_raw_cache()
+    try:
+        with _serve_transit_fixtures(
+            alerts_path="/camsys%2Fsubway-alerts",
+            alerts_body=alerts_body,
+            gtfs_path="/gtfs_subway.zip",
+            gtfs_body=gtfs_body,
+        ) as base:
+            settings = integration_settings.model_copy(update={"mta_gtfs_base": base})
+            services = build_services(settings, open_store=False, strict=True)
+            try:
+                with TestClient(create_app(services)) as client:
+                    small = client.get("/api/mta_subway_alerts", params={"limit": 5}).json()
+                    full = client.get("/api/mta_subway_alerts", params={"limit": 200}).json()
+            finally:
+                await services.aclose()
+    finally:
+        reset_raw_cache()
+
+    assert check_envelope(small, feed=FeedName.MTA_SUBWAY_ALERTS) == "fresh", small["error"]
+    assert check_envelope(full, feed=FeedName.MTA_SUBWAY_ALERTS) == "fresh", full["error"]
+
+    true_total = full["total_before_filter"]
+    assert true_total is not None and true_total > 5, (
+        "the recorded fixture must have more than 5 alerts for this test to prove anything; "
+        f"got total_before_filter={true_total}"
+    )
+    assert len(full["records"]) == true_total and full["truncated"] is False, (
+        "limit=200 should not truncate the recorded fixture's real alert count"
+    )
+
+    # the actual fix under test: total_before_filter must be the real upstream count,
+    # not len(records) -- if the service layer regressed to reporting the post-limit
+    # count, this would silently collapse to 5 and the banner would again under-report.
+    assert small["total_before_filter"] == true_total, (
+        f"/api/mta_subway_alerts?limit=5 reported total_before_filter="
+        f"{small['total_before_filter']}, but the real upstream total is {true_total}: "
+        "alerts-banner.js's totalActiveCount() would under-report exactly like the bug "
+        "this fix addressed"
+    )
+    assert small["truncated"] is True, (
+        "limit=5 against a fixture with more real alerts must set truncated=True, or "
+        "alerts-banner.js's truncationNoticeHtml() never fires and hides alerts silently"
+    )
+    assert len(small["records"]) == 5
+    assert len(small["records"]) != small["total_before_filter"], (
+        "records.length happening to equal total_before_filter here would make this test "
+        "pass without ever exercising the bug alerts-banner.js's totalActiveCount() "
+        "comment describes"
+    )
