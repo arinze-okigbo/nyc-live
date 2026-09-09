@@ -146,6 +146,30 @@ def test_status_pill_styling_exists_for_each_status() -> None:
         assert f'.pill[data-status="{status}"]' in STYLE
 
 
+def test_alert_route_chips_drive_a_shared_highlight_state_on_the_map() -> None:
+    """Clicking a route chip in the alerts banner (alerts-banner.js) must set the same
+    `highlightedRoute` global that subwayShapesLayer() (map-layers.js) reads when
+    building the PathLayer, and the layer must re-render on that change alone (an
+    updateTriggers entry keyed on it), not just on the next data refresh."""
+    assert "let highlightedRoute = null;" in APP_JS
+    assert "highlightedRoute = highlightedRoute === route ? null : route;" in APP_JS
+    assert "getColor: highlightedRoute" in APP_JS
+    assert "getWidth: highlightedRoute" in APP_JS
+    # banner -> map only: selectRoute() must trigger a map re-render itself.
+    assert 'if (typeof renderLayers === "function") renderLayers();' in APP_JS
+
+
+def test_legend_covers_bus_and_subway_shapes_layers() -> None:
+    """The static Legend block must have an entry for every layer actually drawn on the
+    map, including mta_bus (routes) and the always-on subway-shapes backdrop -- both
+    added after the legend was last written."""
+    legend_match = re.search(r'<ul class="legend">(.*?)</ul>', INDEX, flags=re.DOTALL)
+    assert legend_match, "could not find the Legend <ul> in index.html"
+    legend_html = legend_match.group(1)
+    assert "bus" in legend_html
+    assert "subway route" in legend_html
+
+
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:
     assert client.get("/index.html").headers["content-type"].startswith("text/html")
     assert (

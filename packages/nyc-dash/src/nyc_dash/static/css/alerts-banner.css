@@ -91,6 +91,17 @@
   line-height: 1.5;
 }
 
+/* Only chips for a real route_id (data-route present -- see alerts-banner.js's
+   routeChipHtml, which leaves the "?" fallback plain) are a click target for the
+   map highlight, so only those get pointer affordance and a focus ring. */
+.route-chip[data-route] { cursor: pointer; }
+.route-chip[data-route]:hover { filter: brightness(1.15); }
+.route-chip[data-route]:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+
+/* The currently highlighted route (state.js's highlightedRoute) -- its shapes are at
+   full opacity on the map, so the chip that drove that gets a matching ring here. */
+.route-chip--active { box-shadow: 0 0 0 2px var(--text); }
+
 .alert-header { color: var(--text); overflow-wrap: anywhere; }
 
 .alert-meta { margin-top: 3px; color: var(--muted); font-size: 11px; }

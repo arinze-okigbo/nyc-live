@@ -267,6 +267,29 @@ function busLayer(envelope) {
 // pushing hundreds of routes at full opacity would read as spaghetti rather than context.
 // Low alpha keeps this legible as "the physical track" without competing with the
 // (pickable, brighter) marker layers drawn on top of it.
+//
+// When alerts-banner.js sets `highlightedRoute` (a route chip was clicked), that one
+// route's shapes jump to full opacity and a thicker stroke while every other route dims
+// further, so a rider reading "the 2 train skips Jackson Av" can see the 2 train's
+// actual path. getColor/getWidth read `highlightedRoute` directly (a plain global, same
+// as bikeLayer's zoom argument below), and updateTriggers is keyed on it so deck.gl
+// re-renders on a click alone -- this layer's own `data` never changes when that
+// happens, so ordinary prop diffing would otherwise leave the old colors on the GPU.
+const SHAPE_DIM_ALPHA = 80;
+const SHAPE_ECLIPSED_ALPHA = 35; // dimmer still: some other route is highlighted instead
+const SHAPE_HIGHLIGHT_ALPHA = 230;
+const SHAPE_DIM_WIDTH = 1.4;
+const SHAPE_HIGHLIGHT_WIDTH = 4;
+
+function shapeAlpha(routeId) {
+  if (!highlightedRoute) return SHAPE_DIM_ALPHA;
+  return routeId === highlightedRoute ? SHAPE_HIGHLIGHT_ALPHA : SHAPE_ECLIPSED_ALPHA;
+}
+
+function shapeWidth(routeId) {
+  return routeId === highlightedRoute ? SHAPE_HIGHLIGHT_WIDTH : SHAPE_DIM_WIDTH;
+}
+
 function subwayShapesLayer(envelope) {
   if (!envelope || envelope.status === "error") return null;
   const data = envelope.records;
@@ -276,9 +299,13 @@ function subwayShapesLayer(envelope) {
     data,
     pickable: false,
     widthUnits: "pixels",
-    getWidth: 1.4,
     getPath: (d) => d.points.map(([lat, lon]) => [lon, lat]),
-    getColor: (d) => [...(ROUTE_COLORS[d.route_id] || [244, 211, 94]), 80],
+    getColor: (d) => [...(ROUTE_COLORS[d.route_id] || [244, 211, 94]), shapeAlpha(d.route_id)],
+    getWidth: (d) => shapeWidth(d.route_id),
+    updateTriggers: {
+      getColor: highlightedRoute,
+      getWidth: highlightedRoute,
+    },
   });
 }
 
