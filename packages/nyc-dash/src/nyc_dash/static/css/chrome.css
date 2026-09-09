@@ -57,12 +57,46 @@
 /* Weather badge only turns clickable (status-panel.js's `.has-forecast`) once a real
    forecast has actually loaded -- no affordance is ever shown for data that isn't
    there yet. The trailing caret is generated content so it doesn't disturb the
-   ellipsis-truncated badge text itself. */
+   ellipsis-truncated badge text itself. Since extended to also gate on active alerts
+   (weatherAlertEntries), so the class now really means "popover has content", but the
+   name is kept as-is to avoid churn on an established selector. */
 .badge.has-forecast { cursor: pointer; }
 .badge.has-forecast::after {
   content: "\25BE";
   margin-left: 4px;
   opacity: 0.7;
+}
+
+/* Active weather alerts (WeatherAlert, real NWS data) are safety information, not
+   convenience like the forecast, so the badge itself must visibly change -- a user
+   should notice without clicking first. Reuses this app's existing status color
+   vocabulary (tokens.css --error/--stale) rather than inventing a new hue: Extreme/
+   Severe reads exactly as urgent as any other --error state (plus a pulse, since these
+   are the ones worth interrupting a glance for); Moderate/Minor reads as --stale,
+   present but not alarming. Declared after the [data-status]/[data-mode] rules above so
+   it wins on source order at equal specificity -- an alert must outrank "feed is fresh"
+   coloring, since both can be true at once (clear skies at the reporting station, an
+   active rip current statement at another configured one). The warning glyph is a
+   generated ::before, the same idiom .banner::before already uses below, so it doesn't
+   disturb the ellipsis-truncated badge text or collide with the ::after caret above. */
+.badge[data-alert-severity]::before {
+  content: "\26A0";
+  margin-right: 4px;
+}
+.badge[data-alert-severity="moderate"],
+.badge[data-alert-severity="minor"] {
+  color: var(--stale);
+  border-color: var(--stale);
+}
+.badge[data-alert-severity="severe"],
+.badge[data-alert-severity="extreme"] {
+  color: var(--error);
+  border-color: var(--error);
+  animation: weather-alert-pulse 1.6s ease-in-out infinite;
+}
+@keyframes weather-alert-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 71, 111, 0.45); }
+  50% { box-shadow: 0 0 0 4px rgba(239, 71, 111, 0); }
 }
 
 /* Anchored via `position: fixed` + inline top/left set from status-panel.js against
@@ -108,6 +142,69 @@
 .weather-period-temp { color: var(--muted); font-weight: 400; }
 
 .weather-period-detail { margin: 2px 0 0; color: var(--muted); }
+
+/* Alerts render as their own visually distinct block above the forecast periods --
+   urgent/station-specific vs. routine/upcoming, so they get a tinted, accent-bordered
+   card instead of the forecast's plain list rows. Colors again come from the same
+   --error/--stale tokens the badge itself uses, so severity reads consistently
+   wherever it appears. */
+.weather-alert-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Only present when the popover has both alerts and a forecast -- separates the two
+   sections without a redundant border when only one is showing. */
+.weather-alert-list + .weather-period-list {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.weather-alert {
+  border-left: 3px solid var(--stale);
+  background: rgba(244, 162, 89, 0.1);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.weather-alert[data-severity="extreme"],
+.weather-alert[data-severity="severe"] {
+  border-left-color: var(--error);
+  background: rgba(239, 71, 111, 0.1);
+}
+
+.weather-alert-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.weather-alert-severity {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--stale);
+}
+.weather-alert[data-severity="extreme"] .weather-alert-severity,
+.weather-alert[data-severity="severe"] .weather-alert-severity {
+  color: var(--error);
+}
+
+.weather-alert-event { color: var(--text); }
+
+.weather-alert-headline,
+.weather-alert-area,
+.weather-alert-station {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.weather-alert-station { font-style: italic; }
 
 /* .banner is toggled via the `hidden` attribute in markup, not a class -- explicitly
    keep that working now that we set our own `display` for the visible state, since
@@ -226,6 +323,10 @@ main {
   #map:not(.ready) {
     animation: none;
     background: #10141b;
+  }
+  .badge[data-alert-severity="severe"],
+  .badge[data-alert-severity="extreme"] {
+    animation: none;
   }
 }
 

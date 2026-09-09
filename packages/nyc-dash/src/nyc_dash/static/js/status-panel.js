@@ -155,10 +155,16 @@ function applyHealth(payload) {
 function applyWeather(envelope) {
   const badge = el("weather-badge");
   badge.dataset.status = envelope.status;
+  // Alert urgency is computed over every configured station's WeatherReport, not just
+  // the one below that drives the badge's temperature text -- see applyWeatherAlertSeverity's
+  // own comment for why (JFK can have a live rip-current statement while the badge is
+  // otherwise showing Central Park's clear skies, and that must still be visible).
+  applyWeatherAlertSeverity(envelope.records);
   if (envelope.status === "error") {
     badge.textContent = "weather unavailable";
     badge.title = envelope.error ? envelope.error.message : "";
     renderWeatherForecast([]);
+    renderWeatherAlerts([]);
     return;
   }
   const report = envelope.records[0];
@@ -166,6 +172,7 @@ function applyWeather(envelope) {
     badge.textContent = "weather: no station reported";
     badge.title = "";
     renderWeatherForecast([]);
+    renderWeatherAlerts([]);
     return;
   }
   const obs = report.observation || {};
@@ -176,11 +183,15 @@ function applyWeather(envelope) {
   badge.textContent = `${temp}${text} · ${report.station_name}${suffix}`;
   badge.title =
     `observed ${hhmmss(obs.observed_at)}` +
-    (envelope.error ? `\n${envelope.error.message}` : "");
+    (envelope.error ? `\n${envelope.error.message}` : "") +
+    alertTitleSuffix(envelope.records);
   renderWeatherForecast(report.forecast);
+  // Unlike the forecast (primary station only, matches the badge's own temperature),
+  // alerts are collected across every record in the envelope -- see comment above.
+  renderWeatherAlerts(envelope.records);
 }
 
-// -- Weather forecast popover -----------------------------------------------
+// -- Weather forecast + alerts popover ---------------------------------------
 //
 // The weather badge only has room for the current observation, but the backend
 // already fetches a fuller NWS forecast (`report.forecast`: a handful of upcoming
@@ -193,9 +204,14 @@ function applyWeather(envelope) {
 // this app (the click-detail panel) is already click-driven for the same reasons.
 // This popover is self-contained here rather than routed through detail-panel.js,
 // which is out of scope for this file and owned/being edited elsewhere right now.
+//
+// Since extended to also list active `WeatherReport.alerts` (real NWS alerts, e.g. a
+// rip current statement) in their own section above the forecast periods -- see the
+// "Weather alerts" block further down for the severity-badge and aggregation logic.
 const FORECAST_PERIODS_SHOWN = 3;
 
 let weatherForecastPeriods = [];
+let weatherAlertEntries = [];
 let weatherPopoverEl = null;
 let weatherPopoverResizeHandler = null;
 
@@ -265,7 +281,7 @@ function ensureWeatherPopover() {
   badge.setAttribute("aria-expanded", "false");
   const toggle = (ev) => {
     ev.preventDefault();
-    if (!weatherForecastPeriods.length) return;
+    if (!weatherPopoverHasContent()) return;
     setWeatherPopoverOpen(popover.hidden);
   };
   badge.addEventListener("click", toggle);
@@ -281,14 +297,126 @@ function ensureWeatherPopover() {
   });
 }
 
+// -- Weather alerts (severity badge + popover section) ----------------------
+//
+// `WeatherReport.alerts` (contracts.py) is real NWS alerts.weather.gov data -- unlike
+// the forecast, an empty list is the normal case, so nothing renders when it's empty
+// (no "no active alerts" placeholder). When it's non-empty this is safety information,
+// not convenience like the forecast, so it gets its own visual channel on the badge
+// itself (severity color + pulse for the worst active alert, see chrome.css) rather
+// than being something the user only discovers by clicking through.
+//
+// Severity order matches WeatherAlertSeverity (contracts.py) worst-first, so the badge
+// and the popover's ordering always agree on what to lead with.
+const ALERT_SEVERITY_RANK = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
+
+// Aggregated across every record in the envelope, not just the one driving the badge's
+// temperature (`envelope.records[0]`). This app tracks multiple stations (Central Park,
+// La Guardia, JFK); a coastal station can have an active rip-current statement while the
+// primary station shows clear skies, and a user must not be left thinking "no alerts"
+// just because the station picked for the temperature reading happens to have none.
+// Each entry keeps its station_name so the popover can attribute an alert to the right
+// location once more than one report is in play.
+function collectWeatherAlerts(records) {
+  const entries = [];
+  for (const report of records || []) {
+    for (const alert of report.alerts || []) {
+      entries.push({ stationName: report.station_name, alert });
+    }
+  }
+  entries.sort(
+    (a, b) => ALERT_SEVERITY_RANK[b.alert.severity] - ALERT_SEVERITY_RANK[a.alert.severity]
+  );
+  return entries;
+}
+
+// Extreme/Severe read as urgently as this app's existing `--error` status color (plus a
+// pulse -- see .badge[data-alert-severity] in chrome.css); Moderate/Minor read as
+// `--stale`, present but not alarming. Reuses the same two tokens the status pills
+// already use rather than inventing a third color for "alert".
+function applyWeatherAlertSeverity(records) {
+  const badge = el("weather-badge");
+  const entries = collectWeatherAlerts(records);
+  if (entries.length) {
+    badge.dataset.alertSeverity = entries[0].alert.severity.toLowerCase();
+  } else {
+    delete badge.dataset.alertSeverity;
+  }
+}
+
+// A short native-tooltip summary of the worst active alert, appended to the badge's
+// existing `title` -- a quick hover confirms *why* the badge looks urgent without
+// needing to click into the popover for the full list.
+function alertTitleSuffix(records) {
+  const entries = collectWeatherAlerts(records);
+  if (!entries.length) return "";
+  const top = entries[0];
+  const more = entries.length > 1 ? ` (+${entries.length - 1} more)` : "";
+  return `\n⚠ ${top.alert.event} — ${top.alert.severity} (${top.stationName})${more}`;
+}
+
+function alertAreaHtml(alert) {
+  // area_desc ("Kings (Brooklyn); Southwest Suffolk; ...") tells the user whether the
+  // alert actually covers where they are, which the station name alone doesn't -- shown
+  // whenever NWS provided one rather than trying to fuzzy-compare it against the
+  // station's own location.
+  return alert.area_desc
+    ? `<p class="weather-alert-area">${escapeHtml(alert.area_desc)}</p>`
+    : "";
+}
+
+function weatherAlertHtml(entry) {
+  const { stationName, alert } = entry;
+  const headline = alert.headline
+    ? `<p class="weather-alert-headline">${escapeHtml(alert.headline)}</p>`
+    : "";
+  return `<li class="weather-alert" data-severity="${escapeHtml(alert.severity.toLowerCase())}">
+    <div class="weather-alert-head">
+      <span class="weather-alert-severity">${escapeHtml(alert.severity)}</span>
+      <span class="weather-alert-event">${escapeHtml(alert.event)}</span>
+    </div>
+    ${headline}
+    ${alertAreaHtml(alert)}
+    <p class="weather-alert-station">${escapeHtml(stationName)}</p>
+  </li>`;
+}
+
 // Real forecast periods only -- an empty `forecast` (legitimate: `_report_for` can
 // resolve a station with a good observation, see weather.py) removes the popover
 // affordance entirely rather than opening onto an empty or fabricated placeholder.
-function renderWeatherForecast(periods) {
-  weatherForecastPeriods = periods || [];
+// This now also depends on weatherAlertEntries: the popover (and its click affordance)
+// must stay open to a station with alerts but no forecast, and vice versa.
+function weatherPopoverHasContent() {
+  return weatherForecastPeriods.length > 0 || weatherAlertEntries.length > 0;
+}
+
+// Alerts render as their own visually distinct section (see .weather-alert-list in
+// chrome.css: left accent border, tinted background, severity-cased text) above the
+// forecast periods -- urgent, station-specific information first, routine upcoming
+// conditions after, rather than one flat list where an alert would just look like
+// another forecast entry.
+function renderWeatherPopoverBody() {
+  if (!weatherPopoverEl) return;
+  const alertsHtml = weatherAlertEntries.length
+    ? `<ul class="weather-alert-list">${weatherAlertEntries.map(weatherAlertHtml).join("")}</ul>`
+    : "";
+  const forecastHtml = weatherForecastPeriods.length
+    ? `<ul class="weather-period-list">${weatherForecastPeriods
+        .slice(0, FORECAST_PERIODS_SHOWN)
+        .map(weatherPeriodHtml)
+        .join("")}</ul>`
+    : "";
+  weatherPopoverEl.innerHTML = alertsHtml + forecastHtml;
+  if (!weatherPopoverEl.hidden) positionWeatherPopover();
+}
+
+// Shared tail of renderWeatherForecast/renderWeatherAlerts: both feed the same popover
+// and must agree on whether the badge gets a click affordance at all.
+function updateWeatherPopoverAffordance() {
   const badge = el("weather-badge");
-  badge.classList.toggle("has-forecast", weatherForecastPeriods.length > 0);
-  if (!weatherForecastPeriods.length) {
+  const hasContent = weatherPopoverHasContent();
+  badge.classList.toggle("has-forecast", hasContent);
+  if (!hasContent) {
     badge.removeAttribute("role");
     badge.removeAttribute("tabindex");
     badge.removeAttribute("aria-haspopup");
@@ -297,9 +425,15 @@ function renderWeatherForecast(periods) {
     return;
   }
   ensureWeatherPopover();
-  weatherPopoverEl.innerHTML = `<ul class="weather-period-list">${weatherForecastPeriods
-    .slice(0, FORECAST_PERIODS_SHOWN)
-    .map(weatherPeriodHtml)
-    .join("")}</ul>`;
-  if (!weatherPopoverEl.hidden) positionWeatherPopover();
+  renderWeatherPopoverBody();
+}
+
+function renderWeatherForecast(periods) {
+  weatherForecastPeriods = periods || [];
+  updateWeatherPopoverAffordance();
+}
+
+function renderWeatherAlerts(records) {
+  weatherAlertEntries = collectWeatherAlerts(records);
+  updateWeatherPopoverAffordance();
 }
