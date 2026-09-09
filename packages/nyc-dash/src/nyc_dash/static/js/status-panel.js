@@ -6,6 +6,27 @@
  * Depends on: utils.js (el, hhmmss), state.js (state), map-layers.js (FEEDS, renderLayers).
  */
 
+// Small color/gradient identifiers matching each layer's map marker (see
+// map-layers.js's ROUTE_COLORS/STATUS_CRITICAL/etc.) and the legend swatches in
+// index.html, so the list can be scanned by color, not just by reading labels.
+// Deliberately a local lookup keyed by feed.key rather than a new field on FEEDS --
+// map-layers.js is owned by another agent right now.
+const LAYER_ICON = {
+  subway_arrivals: { kind: "dot", color: "#f4d35e" },
+  density: { kind: "heat" },
+  nyc_311: { kind: "dot", color: "#d03b3b" },
+  citibike: { kind: "ramp" },
+  dot_cameras: { kind: "dot", color: "#898781" },
+  dohmh_inspections: { kind: "graded" },
+};
+
+function layerIconHtml(key) {
+  const icon = LAYER_ICON[key];
+  if (!icon) return "";
+  const style = icon.color ? ` style="background:${icon.color}"` : "";
+  return `<span class="layer-icon ${icon.kind}"${style} aria-hidden="true"></span>`;
+}
+
 function buildPanel() {
   const list = el("layers");
   for (const feed of FEEDS) {
@@ -13,6 +34,7 @@ function buildPanel() {
     li.id = `layer-${feed.key}`;
     li.innerHTML = `
       <div class="layer-head">
+        ${layerIconHtml(feed.key)}
         <input type="checkbox" id="toggle-${feed.key}" ${feed.defaultVisible ? "checked" : ""} />
         <label for="toggle-${feed.key}">${feed.label}</label>
         <span class="pill" id="pill-${feed.key}" data-status="loading">loading…</span>
@@ -24,7 +46,42 @@ function buildPanel() {
       state.get(feed.key).visible = ev.target.checked;
       renderLayers();
     });
+    // Flash animation is CSS-driven (see .pill.flash in layers-panel.css); this just
+    // clears the class once it finishes so the same pill can flash again later.
+    el(`pill-${feed.key}`).addEventListener("animationend", (ev) => {
+      if (ev.animationName === "pill-flash") ev.target.classList.remove("flash");
+    });
   }
+  collapseLegend();
+}
+
+// The legend is useful once, then mostly consumes vertical space -- fold it into a
+// native <details>/<summary> so it collapses without any extra JS state to track.
+// This only rearranges the existing #panel DOM that index.html already rendered
+// (moves the live heading/list nodes); it does not touch index.html or recreate
+// their content, since that file is out of scope here.
+function collapseLegend() {
+  const heading = Array.from(document.querySelectorAll("#panel h2")).find(
+    (h) => h.textContent.trim() === "Legend"
+  );
+  const legend = document.querySelector("#panel .legend");
+  if (!heading || !legend || heading.nextElementSibling !== legend) return;
+  const details = document.createElement("details");
+  details.id = "legend-details";
+  details.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = heading.textContent;
+  details.append(summary, legend);
+  heading.replaceWith(details);
+}
+
+// Pulses a pill briefly when its status category actually flips (fresh<->stale<->error),
+// not on every poll tick that merely refreshes the same status with new numbers.
+// See .pill.flash in layers-panel.css, which no-ops under prefers-reduced-motion.
+function flashPill(pill) {
+  pill.classList.remove("flash");
+  void pill.offsetWidth; // restart the animation if a flash is already mid-flight
+  pill.classList.add("flash");
 }
 
 // Plain-language summary for the ErrorKinds whose raw message tends to carry upstream
@@ -46,8 +103,12 @@ function setPill(key, envelope) {
   const detail = el(`detail-${key}`);
   if (!pill) return;
   const feed = FEEDS.find((f) => f.key === key);
+  const previousStatus = pill.dataset.status;
   pill.dataset.status = envelope.status;
   detail.dataset.status = envelope.status;
+  if (previousStatus && previousStatus !== "loading" && previousStatus !== envelope.status) {
+    flashPill(pill);
+  }
   if (envelope.status === "error") {
     pill.textContent = "error";
     const err = envelope.error;
