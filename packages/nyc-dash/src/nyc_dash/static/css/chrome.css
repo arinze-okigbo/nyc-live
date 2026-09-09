@@ -345,6 +345,18 @@ main {
   #topbar h1 { font-size: 13px; }
   .badge { font-size: 11px; padding: 3px 8px; max-width: min(150px, 55vw); }
 
+  /* Search and Borough (the two sections added to the top of #panel since this sheet
+     was built) are the first two `<p class="hint">` children of #panel in source
+     order -- Layers' own hint and the #updated line are the 3rd/4th and stay put.
+     Each hint is one-time explanatory prose (what Search/Borough *do*), which the
+     search input's own placeholder and the chips' own labels already convey on
+     repeat visits; at 60vh they cost ~120px combined, which on a 390-wide phone was
+     enough to push Service Alerts and the top of Layers below the fold on first
+     open, before any scrolling. Dropping just these two -- not Layers' -- keeps the
+     sheet's first screen showing Search, Borough, and real alert content together,
+     without removing anything from the desktop/tablet layout above 480px. */
+  #panel > p.hint:nth-of-type(-n + 2) { display: none; }
+
   /* MapLibre's own zoom/compass buttons and the custom recenter control (see
      createRecenterControl in map-layers.js, which reuses this same
      maplibregl-ctrl-group container class) render at a fixed 29x29px -- comfortably
