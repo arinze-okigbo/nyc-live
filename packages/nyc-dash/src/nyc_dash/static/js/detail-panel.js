@@ -1,18 +1,36 @@
 /*
  * The click-detail panel: one persistent panel, reused by every clickable layer
- * (subway, 311, Citi Bike, DOT cameras, restaurant inspections) instead of five bespoke
- * UIs. `openDetailPanel` owns the panel's DOM; each layer's `*Detail` function only
- * supplies a title and a function that fills in the body. That body-builder may return
- * a cleanup function (clearing a setInterval, cancelling a fetch) which runs when the
- * panel is closed or replaced.
+ * (subway, 311, Citi Bike, DOT cameras, restaurant inspections, buses) instead of six
+ * bespoke UIs. `openDetailPanel` owns the panel's DOM; each layer's `*Detail` function
+ * only supplies a title, a function that fills in the body, and an `identity` (the feed
+ * key + the specific record shown) so the panel can find that same record again on a
+ * later refresh. The body-builder may return either a bare cleanup function (clearing a
+ * setInterval, cancelling a fetch -- runs when the panel is closed or replaced) or, for
+ * builders with an async subsection worth preserving across a refresh (cameraDetail's
+ * live image/density chart, subwayDetail's stop list), the richer `{ cleanup, update }`
+ * shape: `update(freshRecord)` re-renders just the summary fields without touching that
+ * subsection. See applyBuildResult()/refreshOpenDetailPanel() below.
  *
- * Depends on: utils.js (el, escapeHtml, hhmmss), map-layers.js (busRouteLabel).
+ * refreshOpenDetailPanel(feedKey, envelope) is called by data-sync.js's applyEnvelope on
+ * every feed refresh (poll or SSE) so an open panel never goes stale between clicks --
+ * this is the fix for the "ETA/next-stop frozen forever" bug: previously a panel's body
+ * was built exactly once, at click time, and never touched again even though the
+ * underlying feed kept refreshing every REFRESH_S.
+ *
+ * Depends on: utils.js (el, escapeHtml, hhmmss), state.js (state), map-layers.js
+ * (busRouteLabel).
  */
 
 // Kept in sync with the CSS transition-duration on .detail-panel below (detail-panel.css).
 const DETAIL_PANEL_TRANSITION_MS = 180;
 
 let panelCleanup = null;
+// Set alongside panelCleanup when the open panel's body-builder returns the richer
+// `{ cleanup, update }` shape instead of a bare cleanup function -- see
+// applyBuildResult() and refreshOpenDetailPanel() below. null means "this panel has no
+// lightweight update path", which makes refreshOpenDetailPanel fall back to a full
+// body rebuild (still cheap for panels with no async subsections of their own).
+let panelUpdate = null;
 // The close animation's pending "actually hide it now" timeout. Tracked so a second
 // open/close arriving before the first close's transition finishes cancels the stale
 // timer instead of letting it hide a panel that was just reopened.
@@ -36,6 +54,134 @@ let panelTriggerFallback = null;
 // element itself is created once in index.html and reused (only its innerHTML and
 // hidden/is-open state change across opens), so the listener only needs attaching once.
 let panelTrapAttached = false;
+
+// Live-refresh bookkeeping (the "don't leave an open panel frozen" fix): which feed the
+// currently-open panel belongs to, the real-world record it's currently showing, and the
+// body-builder that produced it, so refreshOpenDetailPanel() can find the record's fresh
+// version in the next envelope and re-render without tearing down/reopening the panel.
+// feedKey uses the same strings as data-sync.js's applyEnvelope (FEEDS[].key /
+// STREAM_KEYS), not DETAIL_BUILDERS' layer-id keys -- that's what refreshOpenDetailPanel
+// is called with, and keeping both tables in that vocabulary avoids a second translation
+// table for no benefit.
+let openPanelFeedKey = null;
+let openPanelRecord = null;
+let openPanelBuildBody = null;
+// True once the tracked record has been confirmed absent from a fresh envelope (train
+// completed its run, bus went out of service, etc.) -- stops refreshOpenDetailPanel from
+// re-doing that check (and re-touching the DOM) on every subsequent poll for a panel
+// that's already showing the "no longer tracked" state.
+let openPanelGone = false;
+
+// One identity field per feed, stable enough to re-find the same real-world entity
+// across polls -- matches the record types in contracts.py exactly (SubwayArrival.trip_id,
+// ServiceRequest.unique_key, BikeStation.station_id, Camera.id, RestaurantInspection.camis,
+// BusVehicle.vehicle_id).
+const DETAIL_IDENTITY = {
+  subway_arrivals: (r) => r.trip_id,
+  nyc_311: (r) => r.unique_key,
+  citibike: (r) => r.station_id,
+  dot_cameras: (r) => r.id,
+  dohmh_inspections: (r) => r.camis,
+  mta_bus: (r) => r.vehicle_id,
+};
+
+// Shown in place of the panel body when the tracked record has genuinely dropped out of
+// the feed, instead of leaving the last-known (now-stale) render up forever.
+const RECORD_GONE_MESSAGES = {
+  subway_arrivals: "This train is no longer being tracked (it may have completed its run).",
+  mta_bus: "This bus is no longer being tracked (it may have gone out of service).",
+  citibike: "This station is no longer reporting to the Citi Bike feed.",
+  dot_cameras: "This camera is no longer in the live feed.",
+  dohmh_inspections: "This restaurant is no longer in the live feed.",
+  nyc_311: "This 311 request is no longer in the live feed.",
+};
+
+// dohmh_inspections is the one feed above whose identity field (camis) is not 1:1 with a
+// record: NYC publishes one row per violation per inspection visit, so several rows can
+// share a camis. Every other feed's identity field is already unique, so this only ever
+// has real work to do for that one case.
+function findMatchingRecord(idFn, records, currentRecord) {
+  const targetId = idFn(currentRecord);
+  if (targetId == null) return null;
+  const candidates = records.filter((r) => idFn(r) === targetId);
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+  return candidates.reduce((best, r) => {
+    const bestTime = best.inspection_date ? Date.parse(best.inspection_date) : -Infinity;
+    const time = r.inspection_date ? Date.parse(r.inspection_date) : -Infinity;
+    return time > bestTime ? r : best;
+  });
+}
+
+// Normalizes what a body-builder returned into panelCleanup/panelUpdate. Builders that
+// predate the refresh feature (or have nothing to preserve across a refresh) return a
+// bare cleanup function, same as always; builders with an async subsection worth
+// preserving (cameraDetail, subwayDetail) return `{ cleanup, update }` instead.
+function applyBuildResult(result) {
+  if (typeof result === "function") {
+    panelCleanup = result;
+    panelUpdate = null;
+  } else if (result && typeof result === "object") {
+    panelCleanup = typeof result.cleanup === "function" ? result.cleanup : null;
+    panelUpdate = typeof result.update === "function" ? result.update : null;
+  } else {
+    panelCleanup = null;
+    panelUpdate = null;
+  }
+}
+
+// Called by data-sync.js's applyEnvelope every time a feed refreshes (poll or SSE),
+// once per feed, regardless of whether a panel is open. A no-op unless the open panel
+// actually belongs to `feedKey`. Finds the tracked record's fresh version by identity;
+// if it's still present, re-renders (via the builder's own lightweight `update`, or a
+// full body rebuild if it has none); if it's gone, shows an explicit message instead of
+// leaving the stale render up forever.
+function refreshOpenDetailPanel(feedKey, envelope) {
+  if (!openPanelFeedKey || openPanelFeedKey !== feedKey) return;
+  if (openPanelGone) return;
+  const idFn = DETAIL_IDENTITY[feedKey];
+  if (!idFn || !openPanelRecord || !envelope || !Array.isArray(envelope.records)) return;
+  const match = findMatchingRecord(idFn, envelope.records, openPanelRecord);
+  if (!match) {
+    showRecordGoneState(feedKey);
+    return;
+  }
+  openPanelRecord = match;
+  if (panelUpdate) {
+    panelUpdate(match);
+    return;
+  }
+  if (!openPanelBuildBody) return;
+  const body = el("detail-panel-body");
+  if (!body) return;
+  // Full rebuild path (used by builders with no async subsections to protect): preserve
+  // scroll position across the innerHTML replacement so a mid-scroll reader (e.g. the
+  // inspection-history list) doesn't get yanked back to the top every poll cycle.
+  const scrollTop = body.scrollTop;
+  if (panelCleanup) {
+    panelCleanup();
+    panelCleanup = null;
+  }
+  applyBuildResult(openPanelBuildBody(body, match));
+  body.scrollTop = scrollTop;
+}
+
+function showRecordGoneState(feedKey) {
+  if (panelCleanup) {
+    panelCleanup();
+    panelCleanup = null;
+  }
+  panelUpdate = null;
+  const body = el("detail-panel-body");
+  if (body) {
+    body.innerHTML = emptyStateHtml(
+      "⚠️",
+      RECORD_GONE_MESSAGES[feedKey] || "This item is no longer being tracked."
+    );
+  }
+  openPanelRecord = null;
+  openPanelGone = true;
+}
 
 // "Focusable" for trap purposes: only elements that are actually visible and reachable
 // by Tab right now. getClientRects().length > 0 excludes anything display:none (e.g. a
@@ -94,6 +240,11 @@ function closeDetailPanel({ restoreFocus = true } = {}) {
     panelCleanup();
     panelCleanup = null;
   }
+  panelUpdate = null;
+  openPanelFeedKey = null;
+  openPanelRecord = null;
+  openPanelBuildBody = null;
+  openPanelGone = false;
   if (panelCloseTimer) {
     clearTimeout(panelCloseTimer);
     panelCloseTimer = null;
@@ -134,7 +285,13 @@ function closeDetailPanel({ restoreFocus = true } = {}) {
   restoreFocusIfRequested();
 }
 
-function openDetailPanel(title, buildBody, iconKey) {
+// `identity`, when supplied, is `{ feedKey, record }`: feedKey is the data-sync.js feed
+// key this record belongs to (e.g. "subway_arrivals"), record is the specific record
+// being shown. Together they let refreshOpenDetailPanel() find this same real-world
+// entity again in a later envelope and re-render in place. Callers with nothing
+// meaningful to track (there are none left -- every DETAIL_BUILDERS entry supplies one)
+// may omit it, which simply disables live-refresh for that panel.
+function openDetailPanel(title, buildBody, iconKey, identity) {
   closeDetailPanel({ restoreFocus: false }); // clears any previous camera refresh / in-flight fetch
   if (panelCloseTimer) {
     // The call above just scheduled a deferred hide+clear because a previous panel was
@@ -169,7 +326,11 @@ function openDetailPanel(title, buildBody, iconKey) {
     <div class="detail-panel-body" id="detail-panel-body"></div>`;
   const closeBtn = el("detail-panel-close");
   closeBtn.addEventListener("click", () => closeDetailPanel());
-  panelCleanup = buildBody(el("detail-panel-body")) || null;
+  openPanelBuildBody = buildBody;
+  openPanelFeedKey = identity ? identity.feedKey : null;
+  openPanelRecord = identity ? identity.record : null;
+  openPanelGone = false;
+  applyBuildResult(buildBody(el("detail-panel-body"), openPanelRecord));
   // Move focus into the panel so keyboard users land somewhere useful, and so
   // Escape-to-close (wired in app.js) works immediately without an extra Tab.
   closeBtn.focus({ preventScroll: true });
@@ -252,17 +413,25 @@ function densityHistoryHtml(records) {
   </div>`;
 }
 
+// The summary strip at the top of cameraDetail's panel -- the only part that needs to
+// change on a refresh (is_online / roadway / direction / area can all shift feed to
+// feed). Kept as its own function so both the initial build and the lightweight
+// `update()` below render it identically.
+function cameraSummaryFieldsHtml(camera) {
+  return fieldsHtml([
+    ["Status", camera.is_online ? "online" : "offline"],
+    ["Roadway", escapeHtml(camera.roadway || "—")],
+    ["Direction", escapeHtml(camera.direction || "—")],
+    ["Area", escapeHtml(camera.area || "—")],
+  ]);
+}
+
 function cameraDetail(camera) {
   openDetailPanel(
     escapeHtml(camera.name),
-    (body) => {
+    (body, initialCamera) => {
       body.innerHTML =
-        fieldsHtml([
-          ["Status", camera.is_online ? "online" : "offline"],
-          ["Roadway", escapeHtml(camera.roadway || "—")],
-          ["Direction", escapeHtml(camera.direction || "—")],
-          ["Area", escapeHtml(camera.area || "—")],
-        ]) +
+        `<div id="camera-summary-fields">${cameraSummaryFieldsHtml(initialCamera)}</div>` +
         `<p class="detail-subhead">
            Live view
            <span class="live-badge" id="camera-live-badge" hidden>
@@ -332,13 +501,25 @@ function cameraDetail(camera) {
           );
         });
 
-      return () => {
-        chartCancelled = true;
-        clearInterval(timer);
-        document.removeEventListener("visibilitychange", onVisibilityChange);
+      return {
+        cleanup: () => {
+          chartCancelled = true;
+          clearInterval(timer);
+          document.removeEventListener("visibilitychange", onVisibilityChange);
+        },
+        // Refresh path: only the summary strip is rebuilt. The live image poll and the
+        // one-shot density-history fetch above are intentionally left running
+        // untouched -- restarting them every ~15s poll cycle would re-flash the image
+        // and the chart's loading skeleton for no reason, since neither depends on
+        // anything in the fresh envelope beyond identity (already unchanged).
+        update: (freshCamera) => {
+          const fieldsNode = body.querySelector("#camera-summary-fields");
+          if (fieldsNode) fieldsNode.innerHTML = cameraSummaryFieldsHtml(freshCamera);
+        },
       };
     },
-    "dot_cameras"
+    "dot_cameras",
+    { feedKey: "dot_cameras", record: camera }
   );
 }
 
@@ -408,61 +589,67 @@ function inspectionHistoryHtml(others) {
   return `<ul class="detail-stop-list inspection-history-list">${rows}</ul>${note}`;
 }
 
+// This is a plain full-body rebuild on refresh (no async subsection to protect, see
+// refreshOpenDetailPanel's fallback path), so `body`/`r` here can be either the initial
+// open-time record or a fresh one found by identity (camis) in a later envelope.
 function inspectionDetail(record) {
   openDetailPanel(
     escapeHtml(record.dba || "Unnamed restaurant"),
-    (body) => {
-      const others = otherInspectionsForCamis(record);
+    (body, r) => {
+      const others = otherInspectionsForCamis(r);
       body.innerHTML =
         fieldsHtml([
-          ["Cuisine", escapeHtml(record.cuisine || "—")],
-          ["Grade", escapeHtml(record.grade || "ungraded")],
-          ["Score", record.score != null ? record.score : "—"],
-          ["Inspected", record.inspection_date ? inspectionHistoryDate(record.inspection_date) : "—"],
-          ["Latest violation", escapeHtml(record.violation_description || "none recorded")],
+          ["Cuisine", escapeHtml(r.cuisine || "—")],
+          ["Grade", escapeHtml(r.grade || "ungraded")],
+          ["Score", r.score != null ? r.score : "—"],
+          ["Inspected", r.inspection_date ? inspectionHistoryDate(r.inspection_date) : "—"],
+          ["Latest violation", escapeHtml(r.violation_description || "none recorded")],
         ]) +
         `<p class="detail-subhead">${icon("chart")} Inspection history</p>
          ${inspectionHistoryHtml(others)}`;
     },
-    "dohmh_inspections"
+    "dohmh_inspections",
+    { feedKey: "dohmh_inspections", record }
   );
 }
 
 function service311Detail(record) {
   openDetailPanel(
     escapeHtml(record.complaint_type || "311 request"),
-    (body) => {
+    (body, r) => {
       body.innerHTML = fieldsHtml([
-        ["Descriptor", escapeHtml(record.descriptor || "—")],
-        ["Agency", escapeHtml(record.agency || "—")],
-        ["Status", escapeHtml(record.status || "—")],
-        ["Borough", escapeHtml(record.borough || "—")],
-        ["Address", escapeHtml(record.incident_address || "—")],
-        ["Created", record.created_at ? hhmmss(record.created_at) : "—"],
+        ["Descriptor", escapeHtml(r.descriptor || "—")],
+        ["Agency", escapeHtml(r.agency || "—")],
+        ["Status", escapeHtml(r.status || "—")],
+        ["Borough", escapeHtml(r.borough || "—")],
+        ["Address", escapeHtml(r.incident_address || "—")],
+        ["Created", r.created_at ? hhmmss(r.created_at) : "—"],
       ]);
     },
-    "nyc_311"
+    "nyc_311",
+    { feedKey: "nyc_311", record }
   );
 }
 
 function bikeDetail(record) {
   openDetailPanel(
     escapeHtml(record.name),
-    (body) => {
+    (body, r) => {
       const bikes =
-        record.ebikes_available != null
-          ? `${record.bikes_available} (${record.ebikes_available} e-bikes)`
-          : `${record.bikes_available}`;
+        r.ebikes_available != null
+          ? `${r.bikes_available} (${r.ebikes_available} e-bikes)`
+          : `${r.bikes_available}`;
       body.innerHTML = fieldsHtml([
         ["Bikes", bikes],
-        ["Docks", record.docks_available],
-        ["Capacity", record.capacity != null ? record.capacity : "—"],
-        ["Renting", record.is_renting ? "yes" : "no"],
-        ["Returning", record.is_returning ? "yes" : "no"],
-        ["Last reported", record.last_reported ? hhmmss(record.last_reported) : "—"],
+        ["Docks", r.docks_available],
+        ["Capacity", r.capacity != null ? r.capacity : "—"],
+        ["Renting", r.is_renting ? "yes" : "no"],
+        ["Returning", r.is_returning ? "yes" : "no"],
+        ["Last reported", r.last_reported ? hhmmss(r.last_reported) : "—"],
       ]);
     },
-    "citibike"
+    "citibike",
+    { feedKey: "citibike", record }
   );
 }
 
@@ -510,19 +697,27 @@ function loadSubwayStops() {
   return subwayStopsCache;
 }
 
+// The summary strip at the top of subwayDetail's panel -- trip/direction stay fixed for
+// a given trip_id, but "Next stop"'s ETA is the whole reason this file exists: it must
+// keep counting down (or jump to the next station) as the feed refreshes, not freeze at
+// whatever it read when the panel opened.
+function subwaySummaryFieldsHtml(record) {
+  return fieldsHtml([
+    ["Trip", escapeHtml(record.trip_id)],
+    ["Direction", escapeHtml(record.direction || "—")],
+    [
+      "Next stop",
+      `${escapeHtml(record.stop_name || record.stop_id)} in ${Math.round(record.eta_s / 60)} min`,
+    ],
+  ]);
+}
+
 function subwayDetail(record) {
   openDetailPanel(
     `${escapeHtml(record.route_id)} train`,
-    (body) => {
+    (body, initialRecord) => {
       body.innerHTML =
-        fieldsHtml([
-          ["Trip", escapeHtml(record.trip_id)],
-          ["Direction", escapeHtml(record.direction || "—")],
-          [
-            "Next stop",
-            `${escapeHtml(record.stop_name || record.stop_id)} in ${Math.round(record.eta_s / 60)} min`,
-          ],
-        ]) +
+        `<div id="subway-summary-fields">${subwaySummaryFieldsHtml(initialRecord)}</div>` +
         `<p class="detail-subhead">Full stop list</p>
          <div id="subway-stop-list" class="detail-loading" aria-busy="true" aria-live="polite">
            ${subwaySkeletonHtml()}
@@ -534,7 +729,7 @@ function subwayDetail(record) {
         .then(([trips, stops]) => {
           if (cancelled) return;
           listNode.removeAttribute("aria-busy");
-          const trip = trips.get(record.trip_id);
+          const trip = trips.get(initialRecord.trip_id);
           if (!trip || !trip.stop_times.length) {
             listNode.innerHTML = emptyStateHtml(
               "🚇",
@@ -558,11 +753,22 @@ function subwayDetail(record) {
           listNode.removeAttribute("aria-busy");
           listNode.innerHTML = emptyStateHtml("⚠️", `Could not load the full stop list: ${err.message}`);
         });
-      return () => {
-        cancelled = true;
+      return {
+        cleanup: () => {
+          cancelled = true;
+        },
+        // Refresh path: only the ETA/next-stop summary is rebuilt. The full stop list
+        // is keyed on trip_id alone (which never changes for the same trip) and was
+        // already fetched once above, so re-running that fetch and re-flashing its
+        // loading skeleton every ~15s poll cycle would be pure waste.
+        update: (freshRecord) => {
+          const fieldsNode = body.querySelector("#subway-summary-fields");
+          if (fieldsNode) fieldsNode.innerHTML = subwaySummaryFieldsHtml(freshRecord);
+        },
       };
     },
-    "subway"
+    "subway",
+    { feedKey: "subway_arrivals", record }
   );
 }
 
@@ -570,22 +776,26 @@ function subwayDetail(record) {
 // Occupancy fields on the contract are optional and absent on vehicles that aren't
 // currently monitored (see the contract's own docstring) -- that's expected, not a
 // bug, so a missing next-stop or occupancy value is omitted rather than shown as "—".
+// This is a plain full-body rebuild on refresh (no async subsection here to protect),
+// so the fields list is computed fresh from whichever record (initial or refreshed) is
+// passed in, fixing the same "next_stop_eta frozen forever" bug as subwayDetail above.
 function busDetail(record) {
   const routeLabel = escapeHtml(busRouteLabel(record.route_id));
-  const fields = [["Route", record.route_id ? routeLabel : "—"]];
-  if (record.next_stop_name) {
-    const eta = record.next_stop_eta ? ` · ${hhmmss(record.next_stop_eta)}` : "";
-    fields.push(["Next stop", `${escapeHtml(record.next_stop_name)}${eta}`]);
-  }
-  if (record.stops_away != null) fields.push(["Stops away", record.stops_away]);
-  if (record.occupancy) fields.push(["Occupancy", escapeHtml(record.occupancy)]);
-  if (record.bearing != null) fields.push(["Bearing", `${Math.round(record.bearing)}°`]);
   openDetailPanel(
     record.route_id ? `${routeLabel} bus` : "Bus",
-    (body) => {
+    (body, r) => {
+      const fields = [["Route", r.route_id ? escapeHtml(busRouteLabel(r.route_id)) : "—"]];
+      if (r.next_stop_name) {
+        const eta = r.next_stop_eta ? ` · ${hhmmss(r.next_stop_eta)}` : "";
+        fields.push(["Next stop", `${escapeHtml(r.next_stop_name)}${eta}`]);
+      }
+      if (r.stops_away != null) fields.push(["Stops away", r.stops_away]);
+      if (r.occupancy) fields.push(["Occupancy", escapeHtml(r.occupancy)]);
+      if (r.bearing != null) fields.push(["Bearing", `${Math.round(r.bearing)}°`]);
       body.innerHTML = fieldsHtml(fields);
     },
-    "bus"
+    "bus",
+    { feedKey: "mta_bus", record }
   );
 }
 

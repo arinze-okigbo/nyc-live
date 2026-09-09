@@ -13,7 +13,7 @@
  *
  * Depends on: utils.js (el, setConnection), state.js (state), map-layers.js
  * (FEEDS, STREAM_KEYS, WEATHER_KEY, SUBWAY_SHAPES_KEY, renderLayers), status-panel.js
- * (setPill, applyHealth, applyWeather).
+ * (setPill, applyHealth, applyWeather), detail-panel.js (refreshOpenDetailPanel).
  */
 
 function applyEnvelope(key, envelope) {
@@ -35,6 +35,10 @@ function applyEnvelope(key, envelope) {
   entry.envelope = envelope;
   setPill(key, envelope);
   renderLayers();
+  // If this feed's currently-open detail panel exists (a clicked train/bus/station/
+  // camera/311 request/inspection), re-render it from this fresh envelope instead of
+  // leaving it frozen at whatever was true when it was opened (detail-panel.js).
+  refreshOpenDetailPanel(key, envelope);
   el("updated").textContent = `updated ${new Date().toLocaleTimeString()}`;
 }
 

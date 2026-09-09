@@ -541,3 +541,104 @@ def test_assets_are_served_with_the_right_content_types(client: TestClient) -> N
         .startswith(("text/javascript", "application/javascript"))
     )
     assert client.get("/css/tokens.css").headers["content-type"].startswith("text/css")
+
+
+def test_open_detail_panels_refresh_from_the_feed_they_belong_to() -> None:
+    """A previously-open detail panel must not go stale between polls: data-sync.js's
+    applyEnvelope must call detail-panel.js's refreshOpenDetailPanel once per feed update,
+    generically for every feed (not just subway), and that function must be a no-op
+    unless the currently-open panel actually belongs to the feed that just refreshed."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    data_sync_js = (STATIC_DIR / "js" / "data-sync.js").read_text()
+    assert "function refreshOpenDetailPanel(feedKey, envelope)" in detail_js
+    assert "refreshOpenDetailPanel(key, envelope);" in data_sync_js
+    assert "if (!openPanelFeedKey || openPanelFeedKey !== feedKey) return;" in detail_js
+
+
+def test_detail_identity_fields_match_the_real_contract_field_names() -> None:
+    """Re-finding the same real-world entity in a fresh envelope requires the exact
+    identity field per record type (contracts.py): SubwayArrival.trip_id,
+    ServiceRequest.unique_key, BikeStation.station_id, Camera.id,
+    RestaurantInspection.camis, BusVehicle.vehicle_id -- keyed by data-sync.js's feed
+    key (FEEDS[].key), the vocabulary refreshOpenDetailPanel is actually called with."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "const DETAIL_IDENTITY = {" in detail_js
+    identity_fields = {
+        "subway_arrivals": "r.trip_id",
+        "nyc_311": "r.unique_key",
+        "citibike": "r.station_id",
+        "dot_cameras": "r.id",
+        "dohmh_inspections": "r.camis",
+        "mta_bus": "r.vehicle_id",
+    }
+    for feed_key, field_expr in identity_fields.items():
+        assert f"{feed_key}: (r) => {field_expr}," in detail_js
+
+
+def test_every_detail_builder_passes_its_feed_key_and_record_as_identity() -> None:
+    """Each *Detail function must hand openDetailPanel an `identity` (feedKey + record)
+    matching DETAIL_IDENTITY's keys above, or refreshOpenDetailPanel has nothing to match
+    against for that layer and the panel would stay frozen -- the exact bug being fixed."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    for feed_key in (
+        "subway_arrivals",
+        "nyc_311",
+        "citibike",
+        "dot_cameras",
+        "dohmh_inspections",
+        "mta_bus",
+    ):
+        assert f'{{ feedKey: "{feed_key}", record' in detail_js
+
+
+def test_record_gone_state_is_explicit_not_a_silent_freeze() -> None:
+    """If the tracked record drops out of a later envelope entirely (train completed its
+    run, bus went out of service, etc.), the panel must show an explicit message instead
+    of leaving the last-known render up forever -- and must stop re-checking once shown,
+    rather than re-touching the DOM on every subsequent poll."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "function showRecordGoneState(feedKey)" in detail_js
+    assert "const RECORD_GONE_MESSAGES = {" in detail_js
+    assert "if (!match) {" in detail_js
+    assert "showRecordGoneState(feedKey);" in detail_js
+    assert "let openPanelGone = false;" in detail_js
+    assert "if (openPanelGone) return;" in detail_js
+    assert "openPanelGone = true;" in detail_js
+
+
+def test_camera_and_subway_panels_preserve_async_subsections_on_refresh() -> None:
+    """cameraDetail's live image poll + one-shot density-history fetch, and subwayDetail's
+    one-shot full-stop-list fetch, must NOT restart on every ~15s refresh -- only their
+    summary fields (status/roadway/area; trip/direction/next-stop-eta) should rebuild.
+    Enforced by each returning `{ cleanup, update }` (not a bare cleanup function) whose
+    `update` touches only a dedicated summary container, leaving the rest of the body
+    (and its running timers/fetches) untouched."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "function cameraSummaryFieldsHtml(camera)" in detail_js
+    assert '<div id="camera-summary-fields">' in detail_js
+    assert 'body.querySelector("#camera-summary-fields")' in detail_js
+    assert "function subwaySummaryFieldsHtml(record)" in detail_js
+    assert '<div id="subway-summary-fields">' in detail_js
+    assert 'body.querySelector("#subway-summary-fields")' in detail_js
+    # both return the richer object shape, not a bare cleanup function, so
+    # refreshOpenDetailPanel takes the lightweight `update` path instead of a full rebuild.
+    assert detail_js.count("update: (freshCamera) => {") == 1
+    assert detail_js.count("update: (freshRecord) => {") == 1
+
+
+def test_dohmh_inspection_identity_ties_are_broken_by_most_recent_visit() -> None:
+    """camis is not 1:1 with a dohmh_inspections record (one row per violation per visit),
+    so refreshOpenDetailPanel's identity match must pick a deterministic candidate among
+    same-camis rows rather than an arbitrary one -- newest inspection_date wins."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "function findMatchingRecord(idFn, records, currentRecord)" in detail_js
+    assert "return time > bestTime ? r : best;" in detail_js
+
+
+def test_refresh_preserves_scroll_position_on_the_full_rebuild_path() -> None:
+    """Builders with no async subsection to protect (inspectionDetail, service311Detail,
+    bikeDetail, busDetail) refresh via a full body rebuild; that must not yank a
+    mid-scroll reader (e.g. the inspection-history list) back to the top every poll."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "const scrollTop = body.scrollTop;" in detail_js
+    assert "body.scrollTop = scrollTop;" in detail_js
