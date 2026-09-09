@@ -594,6 +594,75 @@ function createRecenterControl() {
   };
 }
 
+// How long the copy-link button below shows its checkmark (success) or warning
+// (failure) glyph before reverting to the plain copy glyph -- long enough to notice,
+// short enough not to leave a stale-looking state on the control.
+const COPY_LINK_FEEDBACK_MS = 1500;
+
+// A MapLibre IControl (the same onAdd/onRemove contract createRecenterControl above
+// uses): copies the current shareable URL (`location.href`, already kept in sync with
+// the map's live view by writeHashView in app.js -- see the deep-linking comment at the
+// top of app.js) to the clipboard on click. `map.addControl(createCopyLinkControl(),
+// "top-left")` puts it in the same top-left stack, directly below the recenter control,
+// so all three map controls (zoom, recenter, copy link) read as one group.
+//
+// navigator.clipboard.writeText requires a secure context; if it's missing (older
+// browser, non-secure context) or the write itself is rejected, this shows the warning
+// glyph instead of throwing an unhandled promise rejection -- never a silent no-op and
+// never a crash.
+function createCopyLinkControl() {
+  const DEFAULT_GLYPH = "⎘"; // ⎘, a plain "copy" glyph -- no icon sprite needed
+  const SUCCESS_GLYPH = "✓"; // ✓
+  const ERROR_GLYPH = "⚠"; // ⚠
+
+  return {
+    onAdd() {
+      const container = document.createElement("div");
+      container.className = "maplibregl-ctrl maplibregl-ctrl-group";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.title = "Copy shareable link";
+      button.setAttribute("aria-label", "Copy shareable link");
+      button.className = "copy-link-btn";
+      button.textContent = DEFAULT_GLYPH;
+
+      const showFeedback = (glyph, statusClass) => {
+        clearTimeout(this._feedbackTimer);
+        button.classList.remove("is-copied", "is-error");
+        button.classList.add(statusClass);
+        button.textContent = glyph;
+        this._feedbackTimer = setTimeout(() => {
+          button.classList.remove(statusClass);
+          button.textContent = DEFAULT_GLYPH;
+        }, COPY_LINK_FEEDBACK_MS);
+      };
+
+      button.addEventListener("click", () => {
+        if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+          showFeedback(ERROR_GLYPH, "is-error");
+          return;
+        }
+        navigator.clipboard.writeText(location.href).then(
+          () => showFeedback(SUCCESS_GLYPH, "is-copied"),
+          () => showFeedback(ERROR_GLYPH, "is-error")
+        );
+      });
+      container.appendChild(button);
+
+      this._container = container;
+      this._feedbackTimer = null;
+      return container;
+    },
+    onRemove() {
+      clearTimeout(this._feedbackTimer);
+      if (this._container && this._container.parentNode) {
+        this._container.parentNode.removeChild(this._container);
+      }
+      this._container = null;
+    },
+  };
+}
+
 // The borough filter chips in #panel (index.html's #borough-filter). One write site
 // for the shared `selectedBorough` global (state.js), mirroring how selectRoute() in
 // alerts-banner.js is the sole writer for `highlightedRoute`: update the global,

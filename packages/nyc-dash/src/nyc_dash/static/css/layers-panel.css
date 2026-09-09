@@ -149,6 +149,16 @@
 .swatch.heat, .swatch.ramp { width: 28px; height: 10px; border-radius: 3px; }
 .swatch.heat { background: linear-gradient(90deg, #2b6cb0, #f6e05e, #e53e3e); }
 
+/* Feedback states for the copy-link map control (js/map-layers.js's
+   createCopyLinkControl): its glyph swaps to a checkmark on a successful clipboard
+   write, or a warning glyph if navigator.clipboard is unavailable or the write was
+   rejected, reusing the same --fresh/--error status tokens the layer pills above use
+   for the same fresh/error meaning rather than introducing a new color. Two classes
+   already outrank maplibre-gl.css's own `.maplibregl-ctrl-group button` rule on
+   specificity alone, so this holds regardless of stylesheet load order. */
+.copy-link-btn.is-copied { color: var(--fresh); }
+.copy-link-btn.is-error { color: var(--error); }
+
 /* Phone width: the panel is a scrollable bottom sheet (see chrome.css), so trim its
    own padding to leave more of that limited height for content, and grow the layer
    row's touch targets. The checkbox's own box stays modest in size for legibility,

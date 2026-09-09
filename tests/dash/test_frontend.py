@@ -488,6 +488,30 @@ def test_map_view_is_deep_linkable_via_the_url_hash() -> None:
     assert "zoom: initialView ? initialView.zoom : NYC.zoom," in APP_JS
 
 
+def test_map_has_a_discoverable_copy_link_control() -> None:
+    """The deep-link hash (test_map_view_is_deep_linkable_via_the_url_hash) is otherwise
+    only discoverable by noticing the URL bar changed -- a copy-link control must exist
+    alongside the recenter control (same IControl onAdd/onRemove contract, same
+    maplibregl-ctrl-group container), copy `location.href` via
+    navigator.clipboard.writeText on click, show visible feedback on success, fail
+    gracefully (no unhandled rejection) when the Clipboard API is unavailable or
+    rejects, and be wired into the same top-left control stack in app.js."""
+    assert "function createCopyLinkControl()" in APP_JS
+    assert 'container.className = "maplibregl-ctrl maplibregl-ctrl-group";' in APP_JS
+    assert "navigator.clipboard.writeText(location.href).then(" in APP_JS
+    # graceful fallback: no crash / unhandled rejection when the API is missing or
+    # the write itself is rejected -- both paths route through the same feedback fn.
+    assert '!navigator.clipboard || typeof navigator.clipboard.writeText !== "function"' in APP_JS
+    assert 'showFeedback(ERROR_GLYPH, "is-error")' in APP_JS
+    assert 'showFeedback(SUCCESS_GLYPH, "is-copied")' in APP_JS
+    # wired into the same top-left stack as the existing recenter control.
+    assert 'map.addControl(createRecenterControl(), "top-left");' in APP_JS
+    assert 'map.addControl(createCopyLinkControl(), "top-left");' in APP_JS
+    # feedback states are styled, not silent.
+    assert ".copy-link-btn.is-copied" in STYLE
+    assert ".copy-link-btn.is-error" in STYLE
+
+
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:
     assert client.get("/index.html").headers["content-type"].startswith("text/html")
     assert (

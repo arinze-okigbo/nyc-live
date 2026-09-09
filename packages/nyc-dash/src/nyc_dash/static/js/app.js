@@ -67,6 +67,7 @@ function initMap() {
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
   map.addControl(createRecenterControl(), "top-left");
+  map.addControl(createCopyLinkControl(), "top-left");
   map.on("moveend", scheduleHashUpdate);
   map.on("error", (ev) => {
     if (ev && ev.error && /style|tile/i.test(String(ev.error.message || ""))) {
