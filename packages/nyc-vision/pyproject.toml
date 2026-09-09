@@ -3,8 +3,7 @@ name = "nyc-vision"
 version = "0.1.0"
 description = "nyc-vision: YOLO density pipeline over DOT camera frames, writes counts to DuckDB."
 requires-python = ">=3.12,<3.13"
-dependencies = ["nyc-live", "pillow>=10.0", "numpy>=1.26"]
-# ultralytics/torch are added in Phase 3 by cv-engineer via the pytorch-cpu index (see CLAUDE.md).
+dependencies = ["nyc-live", "pillow>=10.0", "numpy>=1.26", "ultralytics>=8.3", "torch>=2.3"]
 
 [project.scripts]
 nyc-vision = "nyc_vision.__main__:main"
@@ -16,5 +15,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/nyc_vision"]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 nyc-live = { workspace = true }
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
