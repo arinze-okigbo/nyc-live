@@ -51,6 +51,8 @@ TOOL_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("get_camera_frame", {"camera_id": CAM_A}),
     ("subway_arrivals", {"stop_id": "127"}),
     ("subway_alerts", {"route_id": "A"}),
+    ("subway_route_shapes", {"route_id": "1"}),
+    ("bus_positions", {"limit": 5}),
     ("citibike_status", {"limit": 5}),
     ("nearby_311", {"limit": 5}),
     ("weather_now", {}),
@@ -58,7 +60,20 @@ TOOL_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("density_now", {}),
     ("density_history", {"bucket_s": 60, "hours": 1}),
 )
-"""Every tool except `feed_health`, which is not an Envelope and is asserted separately."""
+"""Every tool except `feed_health`, which is not an Envelope and is asserted separately.
+
+`subway_route_shapes` and `bus_positions` were added to `nyc_mcp.server` after this list
+was first written (`TOOL_NAMES` grew to include them, `test_server_exposes_exactly_the_
+documented_tools` above already catches a name drifting out of `TOOL_NAMES`, but nothing
+previously *called* either one through this real, spawned-over-stdio process): without
+this pair every other tool got the Phase 2 gate's literal promise -- real client, real
+process, real registry, Envelope shape + `stale_after` asserted -- while these two did
+not, even though they were listed and discoverable. `bus_positions` is key-gated and
+unconfigured here, so it exercises the not-configured short-circuit through the real
+`BusPositionsAdapter`/`CachedFeed`/FastMCP structured-content path; `subway_route_shapes`
+is not key-gated, so it exercises a real (failing, offline) fetch of the static GTFS
+bundle through the same path.
+"""
 
 WRITE_ATTEMPTS: tuple[str, ...] = (
     "INSERT INTO density_samples VALUES ('x', now(), 'person', 1, NULL, NULL, 'm', NULL, 1, 1)",
