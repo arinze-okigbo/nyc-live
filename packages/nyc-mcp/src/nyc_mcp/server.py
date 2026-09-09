@@ -61,8 +61,9 @@ SERVER_NAME = "nyc-live"
 
 INSTRUCTIONS = """\
 Live New York City civic data: DOT traffic cameras (list + JPEG frames), MTA subway
-arrivals and alerts, Citi Bike station status, 311 service requests, NWS weather, and
-a read-only DuckDB warehouse of collected telemetry. Every tool returns an envelope with
+arrivals and alerts, MTA bus positions, subway route polylines, Citi Bike station
+status, 311 service requests, NWS weather, and a read-only DuckDB warehouse of
+collected telemetry. Every tool returns an envelope with
 `status` ("fresh", "stale", or "error"), `fetched_at`, `stale_after`, `records`, and
 `error`. Always check `status`: "stale" means the records are the last good snapshot and
 `error` says why the refresh failed; "error" means there is no usable data. Pass `lat`,
@@ -77,6 +78,8 @@ TOOL_NAMES: tuple[str, ...] = (
     "get_camera_frame",
     "subway_arrivals",
     "subway_alerts",
+    "subway_route_shapes",
+    "bus_positions",
     "citibike_status",
     "nearby_311",
     "weather_now",
@@ -336,6 +339,61 @@ def _register_subway_tools(mcp: FastMCP, state: _State) -> None:
             env = _keep(env, lambda a: wanted in a.routes)
         return _dump(svc_api.nearby(env, None, limit=limit))
 
+    @mcp.tool
+    async def subway_route_shapes(
+        *, route_id: str | None = None, limit: int = 500
+    ) -> dict[str, Any]:
+        """Static GTFS route polylines for drawing subway lines on a map (Envelope[SubwayRouteShape]); 24 hour TTL.
+
+        Each record is one `shape_id`'s ordered `points` list of `(lat, lon)` pairs plus
+        `route_id` and `direction` ("N"/"S"). A route (e.g. "1", "A") has MANY shapes --
+        branches, express/local segments, both directions, from 2 up to 35 in the live
+        bundle -- never one polyline per route; group by `route_id` to draw all of a
+        route's lines, or use `shape_id` to draw one exact path. A shape has no single
+        lat/lon of its own (it is a polyline, not a point), so `lat`/`lon`/`radius_m`
+        geo-filtering is not offered here -- filter by `route_id` instead (e.g. "1" for
+        every shape of the 1 train; case-sensitive as GTFS publishes it). `status="stale"`
+        means these are the last-fetched shapes (rare, given the 24 h TTL) and `error`
+        says why the refresh failed; `status="error"` means the static GTFS bundle could
+        not be fetched or parsed.
+        """
+        env = await state.get().registry[FeedName.MTA_SUBWAY_SHAPES].get()
+        if route_id is not None:
+            env = _keep(env, lambda s: s.route_id == route_id)
+        return _dump(svc_api.nearby(env, None, limit=limit))
+
+    @mcp.tool
+    async def bus_positions(
+        *,
+        lat: float | None = None,
+        lon: float | None = None,
+        radius_m: float = 1000,
+        route_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Live MTA bus positions (Envelope[BusVehicle]) from SIRI VehicleMonitoring; 30 s TTL.
+
+        Each record is one bus's current `lat`/`lon` plus `vehicle_id`, `route_id`,
+        `trip_id`, `bearing`, `timestamp`, and -- present on about 99.9% of active buses,
+        `null` on the rest -- `next_stop_id`, `next_stop_name`, `next_stop_eta`,
+        `next_stop_distance_m`, `stops_away`, and `occupancy` (a free-text string such as
+        "manySeatsAvailable"). `route_id` keeps buses whose raw SIRI line ref contains the
+        given text case-insensitively (e.g. "M15" matches the upstream's "MTA NYCT_M15").
+        With `lat`/`lon`, only buses within `radius_m` are returned, nearest first with
+        `distance_m` set; otherwise the first `limit` of all active buses system-wide.
+        This feed is key-gated on `MTA_BUS_TIME_API_KEY`: until that env var is set,
+        every call returns `status="error"` with `error.kind="not_configured"` and no
+        records -- that is expected, not a bug. `status="stale"` means the last good
+        positions are being served (see `fetched_at`) and `error` explains why the
+        refresh failed; any other `status="error"` means MTA Bus Time is unreachable or
+        rejected the key.
+        """
+        env = await state.get().registry[FeedName.MTA_BUS].get()
+        if route_id is not None:
+            wanted = route_id.upper()
+            env = _keep(env, lambda b: b.route_id is not None and wanted in b.route_id.upper())
+        return _dump(svc_api.nearby(env, _query(lat, lon, radius_m), limit=limit))
+
 
 # ---------------------------------------------------------------------------- civic
 
@@ -393,14 +451,18 @@ def _register_civic_tools(mcp: FastMCP, state: _State) -> None:
         radius_m: float = 50_000,
         limit: int = 10,
     ) -> dict[str, Any]:
-        """Current NWS observations and short forecast for NYC (Envelope[WeatherReport]).
+        """Current NWS observations, short forecast, and active alerts for NYC (Envelope[WeatherReport]).
 
         One record per weather station (Central Park, LaGuardia, JFK, Newark, ...) with the
-        latest `observation` (temperature_c, humidity_pct, wind_speed_kmh, text, ...) and
-        a short `forecast` list. 5 minute TTL. With `lat`/`lon`, stations within
-        `radius_m` nearest first; the default radius is 50 km so the nearest station is
-        always included. `status="stale"` means the observation is from the last good
-        fetch at `fetched_at`; `status="error"` means api.weather.gov is unavailable.
+        latest `observation` (temperature_c, humidity_pct, wind_speed_kmh, text, ...), a
+        short `forecast` list, and `alerts` -- any currently active NWS alerts.weather.gov
+        entries for the area (heat advisories, flood warnings, etc.), each with `event`,
+        `headline`, `severity`, `effective`, and `expires`. An empty `alerts` list is the
+        normal case (no alert issued), not a failure; always check it for severe weather.
+        5 minute TTL. With `lat`/`lon`, stations within `radius_m` nearest first; the
+        default radius is 50 km so the nearest station is always included.
+        `status="stale"` means the observation is from the last good fetch at
+        `fetched_at`; `status="error"` means api.weather.gov is unavailable.
         """
         env = await state.get().registry[FeedName.WEATHER].get()
         return _dump(svc_api.nearby(env, _query(lat, lon, radius_m), limit=limit))

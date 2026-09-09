@@ -22,6 +22,7 @@ from nyc_live.config import Settings
 from nyc_live.contracts import (
     DEFAULT_TTL,
     BikeStation,
+    BusVehicle,
     Camera,
     CameraSource,
     ErrorKind,
@@ -31,6 +32,7 @@ from nyc_live.contracts import (
     Snapshot,
     StopTimeUpdate,
     SubwayAlert,
+    SubwayRouteShape,
     SubwayStop,
     SubwayTrip,
     WeatherObservation,
@@ -241,6 +243,58 @@ def requests_311(now: datetime) -> list[ServiceRequest]:
     ]
 
 
+def shapes() -> list[SubwayRouteShape]:
+    return [
+        SubwayRouteShape(
+            shape_id="1..N03R",
+            route_id="1",
+            direction="N",
+            points=[(40.7033, -74.0170), (40.7300, -74.0000), (40.7580, -73.9855)],
+        ),
+        SubwayRouteShape(
+            shape_id="1..S03R",
+            route_id="1",
+            direction="S",
+            points=[(40.7580, -73.9855), (40.7300, -74.0000), (40.7033, -74.0170)],
+        ),
+        SubwayRouteShape(
+            shape_id="N..N01R",
+            route_id="N",
+            direction="N",
+            points=[(40.7033, -74.0170), (40.7440, -73.9903)],
+        ),
+    ]
+
+
+def buses() -> list[BusVehicle]:
+    return [
+        BusVehicle(
+            lat=TIMES_SQ[0],
+            lon=TIMES_SQ[1],
+            vehicle_id="NYCT_1001",
+            route_id="MTA NYCT_M15",
+            trip_id="t-m15-1",
+            bearing=90.0,
+            timestamp=now_utc(),
+            next_stop_id="401234",
+            next_stop_name="1 Ave & E 42 St",
+            next_stop_eta=now_utc() + timedelta(minutes=3),
+            next_stop_distance_m=250.0,
+            stops_away=2,
+            occupancy="manySeatsAvailable",
+        ),
+        BusVehicle(
+            lat=BATTERY[0],
+            lon=BATTERY[1],
+            vehicle_id="NYCT_2002",
+            route_id="MTA NYCT_M20",
+            trip_id=None,
+            bearing=None,
+            timestamp=now_utc(),
+        ),
+    ]
+
+
 def weather(now: datetime) -> list[WeatherReport]:
     return [
         WeatherReport(
@@ -286,16 +340,22 @@ def make_registry(
     *,
     down: frozenset[FeedName] | set[FeedName] = frozenset(),
     store: Store | None = None,
+    bus_records: list[BusVehicle] | None = None,
 ) -> FeedRegistry:
+    """`bus_records=None` (the default) keeps MTA_BUS unconfigured, matching the real
+    registry with no `MTA_BUS_TIME_API_KEY` set. Pass `buses()` to exercise the
+    configured, real-data path.
+    """
     adapters: list[Any] = [
         StaticAdapter(FeedName.DOT_CAMERAS, cameras()),
         StaticAdapter(FeedName.MTA_SUBWAY, trips(now)),
         StaticAdapter(FeedName.MTA_SUBWAY_ALERTS, alerts()),
         StaticAdapter(FeedName.MTA_SUBWAY_STOPS, stops()),
+        StaticAdapter(FeedName.MTA_SUBWAY_SHAPES, shapes()),
         StaticAdapter(FeedName.CITIBIKE, bikes()),
         StaticAdapter(FeedName.NYC_311, requests_311(now)),
         StaticAdapter(FeedName.WEATHER, weather(now)),
-        StaticAdapter(FeedName.MTA_BUS, [], configured=False),
+        StaticAdapter(FeedName.MTA_BUS, bus_records or [], configured=bus_records is not None),
         StaticAdapter(FeedName.NY511_CAMERAS, [], configured=False),
     ]
     adapters = [DownAdapter(a.name) if a.name in down else a for a in adapters]
@@ -314,8 +374,26 @@ def services(
 
 
 @pytest.fixture
+def services_with_bus(
+    cam_settings: Settings, client: httpx.AsyncClient, store: Store, mock: respx.MockRouter
+) -> Services:
+    """Like `services`, but with MTA_BUS configured and serving real-shaped BusVehicle data."""
+    registry = make_registry(now_utc(), store=store, bus_records=buses())
+    frames = CameraFrameSource(client=client, settings=cam_settings)
+    return Services(
+        settings=cam_settings, client=client, registry=registry, frames=frames, store=store
+    )
+
+
+@pytest.fixture
 def server(services: Services) -> FastMCP:
     return create_server(services)
+
+
+@pytest.fixture
+async def mcp_with_bus(services_with_bus: Services) -> AsyncIterator[Client]:
+    async with Client(create_server(services_with_bus)) as c:
+        yield c
 
 
 @pytest.fixture

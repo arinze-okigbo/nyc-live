@@ -24,6 +24,9 @@ from tests.mcp.conftest import (
     make_registry,
 )
 
+BUS_1 = "NYCT_1001"
+BUS_2 = "NYCT_2002"
+
 ENVELOPE_KEYS = {
     "feed",
     "status",
@@ -55,9 +58,17 @@ async def test_every_tool_is_listed_with_llm_facing_docs(mcp: Client) -> None:
         assert len(desc) > 80, name
         if name != "feed_health":
             assert 'status="error"' in desc, name
-    for name in ("list_cameras", "subway_arrivals", "citibike_status", "nearby_311", "weather_now"):
+    for name in (
+        "list_cameras",
+        "subway_arrivals",
+        "bus_positions",
+        "citibike_status",
+        "nearby_311",
+        "weather_now",
+    ):
         props = tools[name].input_schema["properties"]
         assert {"lat", "lon", "radius_m", "limit"} <= set(props), name
+    assert "lat" not in tools["subway_route_shapes"].input_schema["properties"]
 
 
 @pytest.mark.parametrize(
@@ -67,6 +78,8 @@ async def test_every_tool_is_listed_with_llm_facing_docs(mcp: Client) -> None:
         ("nearby_cameras", {"lat": TIMES_SQ[0], "lon": TIMES_SQ[1]}, "dot_cameras"),
         ("subway_arrivals", {}, "mta_subway"),
         ("subway_alerts", {}, "mta_subway_alerts"),
+        ("subway_route_shapes", {}, "mta_subway_shapes"),
+        ("bus_positions", {}, "mta_bus"),
         ("citibike_status", {}, "citibike"),
         ("nearby_311", {}, "nyc_311"),
         ("weather_now", {}, "weather"),
@@ -219,6 +232,58 @@ async def test_subway_alerts_by_route_and_point(mcp: Client) -> None:
     assert env["status"] == "fresh"  # empty after a filter is fine; the feed itself was OK
 
 
+async def test_subway_route_shapes_by_route_and_default(mcp: Client) -> None:
+    env = await call(mcp, "subway_route_shapes")
+    assert {s["shape_id"] for s in env["records"]} == {"1..N03R", "1..S03R", "N..N01R"}
+    assert env["records"][0]["points"][0] == [40.7033, -74.0170]
+
+    env = await call(mcp, "subway_route_shapes", route_id="1")
+    assert {s["shape_id"] for s in env["records"]} == {"1..N03R", "1..S03R"}
+    assert all(s["route_id"] == "1" for s in env["records"])
+
+    env = await call(mcp, "subway_route_shapes", route_id="Q")
+    assert env["records"] == []
+    assert env["status"] == "fresh"
+
+
+async def test_subway_route_shapes_has_no_geo_params(mcp: Client) -> None:
+    tools = {t.name: t for t in await mcp.list_tools()}
+    props = set(tools["subway_route_shapes"].input_schema["properties"])
+    assert props == {"route_id", "limit"}
+
+
+# --------------------------------------------------------------------------- bus
+
+
+async def test_bus_positions_not_configured_without_key(mcp: Client) -> None:
+    env = await call(mcp, "bus_positions")
+    assert env["status"] == "error"
+    assert env["error"]["kind"] == "not_configured"
+    assert env["records"] == []
+
+
+async def test_bus_positions_real_data_shape(mcp_with_bus: Client) -> None:
+    env = await call(mcp_with_bus, "bus_positions")
+    assert env["status"] == "fresh"
+    assert {b["vehicle_id"] for b in env["records"]} == {BUS_1, BUS_2}
+    b1 = next(b for b in env["records"] if b["vehicle_id"] == BUS_1)
+    assert b1["route_id"] == "MTA NYCT_M15"
+    assert b1["next_stop_name"] == "1 Ave & E 42 St"
+    assert b1["stops_away"] == 2
+    assert b1["occupancy"] == "manySeatsAvailable"
+    b2 = next(b for b in env["records"] if b["vehicle_id"] == BUS_2)
+    assert b2["next_stop_name"] is None and b2["trip_id"] is None
+
+
+async def test_bus_positions_route_id_and_geo_filter(mcp_with_bus: Client) -> None:
+    env = await call(mcp_with_bus, "bus_positions", route_id="m15")
+    assert [b["vehicle_id"] for b in env["records"]] == [BUS_1]
+
+    env = await call(mcp_with_bus, "bus_positions", lat=TIMES_SQ[0], lon=TIMES_SQ[1], radius_m=200)
+    assert [b["vehicle_id"] for b in env["records"]] == [BUS_1]
+    assert env["records"][0]["distance_m"] == 0.0
+
+
 # --------------------------------------------------------------------------- bikes / civic
 
 
@@ -241,6 +306,8 @@ async def test_weather_now_default_radius_reaches_a_station(mcp: Client) -> None
     env = await call(mcp, "weather_now", lat=BATTERY[0], lon=BATTERY[1])
     assert [r["station_id"] for r in env["records"]] == ["KNYC"]
     assert env["records"][0]["distance_m"] > 5000
+    # WeatherReport.alerts flows through _dump() automatically; empty is the normal case.
+    assert env["records"][0]["alerts"] == []
 
 
 # --------------------------------------------------------------------------- warehouse
