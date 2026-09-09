@@ -13,8 +13,13 @@ Endpoints
   a bad request (unknown feed key, lat without lon, geo filter on a feed whose
   records have no coordinates).
 * `GET /api/health` — `FeedRegistry.health()` plus the DuckDB store state.
-* `GET /api/stream` — Server-Sent Events; see `nyc_dash.stream` for the wire
-  format and the polling fallback.
+* `GET /api/stream` — Server-Sent Events. Takes the same arguments as the feed
+  endpoints, flatly (applying to every streamed feed) or prefixed per feed as
+  `<feed_key>.<name>=<value>` — `?feeds=mta_bus,density&mta_bus.limit=3000&
+  density.window_s=900` — because one flat `limit=` cannot express a different
+  page size per feed, and a stream that quietly used the route defaults would
+  shrink a layer the client had already fetched at a larger size. See
+  `nyc_dash.stream` for the full wire format and the polling fallback.
 * `/` — the static single-page dashboard (`static/index.html`, `static/js/*.js`,
   `static/css/*.css` -- no build step, plain scripts/stylesheets loaded in dependency
   order; see the `<head>` comment in `index.html`).
@@ -50,7 +55,9 @@ from nyc_dash.stream import (
     MAX_INTERVAL_S,
     MIN_INTERVAL_S,
     SSE_HEADERS,
+    FeedParamOverrides,
     event_stream,
+    parse_feed_overrides,
 )
 from nyc_live import services as svc_api
 from nyc_live.config import Settings
@@ -156,6 +163,12 @@ def _resolve(feed: str) -> FeedRoute:
     return route
 
 
+DEFAULT_HORIZON_S = 1800
+"""subway_arrivals: how far ahead to look when the caller does not say."""
+DEFAULT_WINDOW_S = 300
+"""density: trailing aggregation window when the caller does not say."""
+
+
 def _params(
     route: FeedRoute,
     *,
@@ -166,8 +179,8 @@ def _params(
     stop_id: str | None = None,
     camera_id: str | None = None,
     complaint_type: str | None = None,
-    horizon_s: int = 1800,
-    window_s: int = 300,
+    horizon_s: int = DEFAULT_HORIZON_S,
+    window_s: int = DEFAULT_WINDOW_S,
 ) -> Params:
     try:
         query = svc_api.geo_query(lat, lon, radius_m if radius_m is not None else None)
@@ -191,6 +204,31 @@ def _params(
         complaint_type=complaint_type,
         horizon_s=horizon_s,
         window_s=window_s,
+    )
+
+
+def _stream_params(route: FeedRoute, feed: FeedParamOverrides, flat: FeedParamOverrides) -> Params:
+    """One streamed feed's `Params`: its own overrides, else the flat ones, else defaults.
+
+    `flat` carries `/api/stream`'s unprefixed `lat`/`lon`/`radius_m`/`limit`, which apply
+    to every feed on the stream; `feed` carries that one feed's `<feed_key>.<name>`
+    arguments. Both are already validated by `FeedParamOverrides`, so this only chooses.
+    """
+
+    def pick[T](specific: T | None, shared: T | None) -> T | None:
+        return specific if specific is not None else shared
+
+    return _params(
+        route,
+        lat=pick(feed.lat, flat.lat),
+        lon=pick(feed.lon, flat.lon),
+        radius_m=pick(feed.radius_m, flat.radius_m),
+        limit=pick(feed.limit, flat.limit),
+        stop_id=feed.stop_id,
+        camera_id=feed.camera_id,
+        complaint_type=feed.complaint_type,
+        horizon_s=feed.horizon_s if feed.horizon_s is not None else DEFAULT_HORIZON_S,
+        window_s=feed.window_s if feed.window_s is not None else DEFAULT_WINDOW_S,
     )
 
 
@@ -248,7 +286,18 @@ def create_app(
     async def health() -> JSONResponse:
         return JSONResponse(api.health_payload(state.get()), headers={"cache-control": "no-store"})
 
-    @app.get("/api/stream", summary="Server-Sent Events push of every dashboard feed")
+    @app.get(
+        "/api/stream",
+        summary="Server-Sent Events push of every dashboard feed",
+        description=(
+            "Pushes one Envelope per feed per cycle. lat/lon/radius_m/limit below apply to "
+            "every streamed feed; to give one feed its own arguments (a different page size, "
+            "window or horizon than the rest) prefix any /api/<feed> query parameter with "
+            "that feed's key, e.g. `?feeds=mta_bus,density&mta_bus.limit=3000"
+            "&density.window_s=900`. An unknown prefixed name, an out-of-range value, or a "
+            "prefix naming a feed that is not in `feeds` is a 400."
+        ),
+    )
     async def stream(
         request: Request,
         *,
@@ -261,10 +310,12 @@ def create_app(
         cycles: int = Query(
             0, ge=0, le=100_000, description="Stop after N cycles; 0 streams until disconnect."
         ),
-        lat: float | None = Query(None, ge=-90, le=90),
-        lon: float | None = Query(None, ge=-180, le=180),
-        radius_m: float | None = Query(None, gt=0, le=50_000),
-        limit: int | None = Query(None, ge=1, le=50_000),
+        lat: float | None = Query(None, ge=-90, le=90, description="Applies to every feed."),
+        lon: float | None = Query(None, ge=-180, le=180, description="Applies to every feed."),
+        radius_m: float | None = Query(None, gt=0, le=50_000, description="Applies to every feed."),
+        limit: int | None = Query(
+            None, ge=1, le=50_000, description="Applies to every feed; `<feed>.limit` beats it."
+        ),
     ) -> StreamingResponse:
         keys = (
             [k.strip() for k in feeds.split(",") if k.strip()]
@@ -273,10 +324,17 @@ def create_app(
         )
         if not keys:
             raise HTTPException(status_code=400, detail="feeds must name at least one feed")
-        # geo / limit defaults differ per feed, so each route streams with its own Params
+        try:
+            overrides = parse_feed_overrides(request.query_params, keys)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Arguments differ per feed (a 3000-bus page next to a 500-row density page), so
+        # each route streams with its own Params: its `<feed_key>.<name>` overrides first,
+        # then the flat argument, then the route's own default.
+        flat = FeedParamOverrides(lat=lat, lon=lon, radius_m=radius_m, limit=limit)
         pairs = [
-            (r, _params(r, lat=lat, lon=lon, radius_m=radius_m, limit=limit))
-            for r in (_resolve(k) for k in keys)
+            (route, _stream_params(route, overrides[key], flat))
+            for key, route in ((k, _resolve(k)) for k in keys)
         ]
         body = event_stream(request, state.get, pairs, interval_s=interval_s, cycles=cycles)
         return StreamingResponse(body, media_type="text/event-stream", headers=SSE_HEADERS)
@@ -290,10 +348,14 @@ def create_app(
         radius_m: float | None = Query(None, gt=0, le=50_000),
         limit: int | None = Query(None, ge=1, le=50_000),
         stop_id: str | None = Query(None, description="subway_arrivals: platform or station id"),
-        horizon_s: int = Query(1800, ge=0, le=86_400, description="subway_arrivals: ETA horizon"),
+        horizon_s: int = Query(
+            DEFAULT_HORIZON_S, ge=0, le=86_400, description="subway_arrivals: ETA horizon"
+        ),
         complaint_type: str | None = Query(None, description="nyc_311: substring match"),
         camera_id: str | None = Query(None, description="density: one camera"),
-        window_s: int = Query(300, ge=1, le=86_400, description="density: trailing window"),
+        window_s: int = Query(
+            DEFAULT_WINDOW_S, ge=1, le=86_400, description="density: trailing window"
+        ),
     ) -> JSONResponse:
         route = _resolve(feed)
         params = _params(
