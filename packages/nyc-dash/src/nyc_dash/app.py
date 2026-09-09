@@ -34,12 +34,14 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from nyc_dash import api
 from nyc_dash.api import FEED_KEYS, ROUTE_BY_KEY, ROUTES, FeedRoute, Params
@@ -88,8 +90,60 @@ class _State:
             self.services = None
 
 
+GZIP_MIN_BYTES = 1000
+"""Below this, the gzip header costs more than it saves."""
+
+
+class _SelectiveGZipMiddleware(GZipMiddleware):
+    """GZip everything except the SSE stream.
+
+    Measured on this app: no endpoint sent Content-Encoding at all, and a cold load
+    pulled 7.13-7.90 MB of which 92% was `/api/*`. Real gzip ratios here are 6-17%
+    (`mta_subway_shapes` 3,451,286 -> 209,406 B, i.e. 6.1%), so this is the single
+    largest available win for anyone not on localhost.
+
+    `/api/stream` is excluded deliberately: Starlette's GZipMiddleware buffers a
+    streaming response, which would defeat the point of server-sent events by holding
+    each push until the buffer flushed. Compressing the stream needs per-event
+    compression instead, which is a separate change.
+    """
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("path", "").startswith("/api/stream"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+CACHEABLE_TTL = timedelta(hours=1)
+"""A feed whose TTL is at least this long may be cached by the browser for what
+remains of that TTL. Below it, `no-store` stays: a live feed must never be served
+from cache, since the whole point is that the value changed."""
+
+
+def _cache_control(env: Envelope[Any]) -> str:
+    """Honest caching, derived from the envelope's own freshness window.
+
+    `mta_subway_shapes` is 3.45 MB of static GTFS geometry on a 24 hour TTL that was
+    being re-downloaded in full on every page load because every feed was blanket
+    `no-store` -- measured at 48% of the cold-load payload, and blocking it took first
+    paint from 312ms to 56ms. The response is valid until `stale_after`, so that is
+    exactly how long it may be cached, and no longer.
+
+    Errors and stale snapshots are never cached: re-asking is the point.
+    """
+    if env.status != "fresh" or env.stale_after is None or env.fetched_at is None:
+        return "no-store"
+    if env.stale_after - env.fetched_at < CACHEABLE_TTL:
+        return "no-store"
+    remaining = int((env.stale_after - datetime.now(UTC)).total_seconds())
+    if remaining <= 0:
+        return "no-store"
+    return f"private, max-age={remaining}"
+
+
 def _envelope_response(env: Envelope[Any]) -> JSONResponse:
-    return JSONResponse(env.model_dump(mode="json"), headers={"cache-control": "no-store"})
+    return JSONResponse(env.model_dump(mode="json"), headers={"cache-control": _cache_control(env)})
 
 
 def _resolve(feed: str) -> FeedRoute:
@@ -165,6 +219,7 @@ def create_app(
 
     app = FastAPI(title=TITLE, description=DESCRIPTION, version="0.1.0", lifespan=lifespan)
     app.state.dash = state
+    app.add_middleware(_SelectiveGZipMiddleware, minimum_size=GZIP_MIN_BYTES)
 
     @app.get("/api", summary="List the dashboard feed endpoints")
     async def index() -> JSONResponse:

@@ -8,7 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nyc_dash.api import FEED_KEYS, ROUTE_BY_KEY
-from nyc_live.contracts import DensitySample, DetectionClass, FeedName, now_utc
+from nyc_dash.app import CACHEABLE_TTL
+from nyc_live.contracts import DEFAULT_TTL, DensitySample, DetectionClass, FeedName, now_utc
 from nyc_live.store import Store
 from tests.dash.conftest import BATTERY, TIMES_SQ
 
@@ -39,8 +40,19 @@ def test_api_index_lists_every_feed(client: TestClient) -> None:
 def test_every_feed_endpoint_returns_a_whole_envelope(client: TestClient, key: str) -> None:
     response = client.get(f"/api/{key}")
     assert response.status_code == 200
-    assert response.headers["cache-control"] == "no-store"
+    # Cache-Control is derived from the envelope's own freshness window, not blanket
+    # no-store: a live feed must never come from cache, but re-downloading 3.45 MB of
+    # 24-hour-TTL subway geometry on every page load was 48% of the cold-load payload.
+    # A cacheable response may never outlive the freshness it claims, so max-age is
+    # bounded by the feed's TTL.
+    cache_control = response.headers["cache-control"]
     body = response.json()
+    ttl = DEFAULT_TTL[ROUTE_BY_KEY[key].feed]
+    if body["status"] != "fresh" or ttl < CACHEABLE_TTL:
+        assert cache_control == "no-store", key
+    else:
+        assert cache_control.startswith("private, max-age="), key
+        assert 0 < int(cache_control.rpartition("=")[2]) <= ttl.total_seconds(), key
     assert set(body) == ENVELOPE_KEYS
     assert body["feed"] == ROUTE_BY_KEY[key].feed.value
     assert body["status"] in {"fresh", "stale", "error"}
