@@ -161,6 +161,23 @@ def test_alert_route_chips_drive_a_shared_highlight_state_on_the_map() -> None:
     assert 'if (typeof renderLayers === "function") renderLayers();' in APP_JS
 
 
+def test_alerts_count_reflects_the_envelope_total_not_the_page_size() -> None:
+    """The "N active" badge must be driven by envelope.total_before_filter -- the real
+    upstream count -- never by records.length, which is only ever the fetched page
+    size (bounded by ALERTS_ENDPOINT's limit) and silently undercounts once the feed
+    is truncated. A truncated response must also render an honest "+N more" notice
+    rather than just presenting the partial list as if it were everything."""
+    alerts_js = (STATIC_DIR / "js" / "alerts-banner.js").read_text()
+    assert "function totalActiveCount(envelope)" in alerts_js
+    assert "envelope.total_before_filter" in alerts_js
+    assert "records.length} active" not in alerts_js
+    assert "function truncationNoticeHtml(envelope, shownCount, totalCount)" in alerts_js
+    assert "envelope.truncated" in alerts_js
+    assert "more active alert" in alerts_js
+    # limit=50 was the bug (silently hid alerts past the 50th); it must be gone.
+    assert "limit=50" not in alerts_js
+
+
 def test_legend_covers_bus_and_subway_shapes_layers() -> None:
     """The static Legend block must have an entry for every layer actually drawn on the
     map, including mta_bus (routes) and the always-on subway-shapes backdrop -- both
@@ -361,6 +378,44 @@ def test_search_kind_badge_css_exists_for_cameras_and_bus_routes() -> None:
     rule, following the exact per-kind selector pattern subway/citibike already use."""
     assert '.search-result-kind[data-kind="cameras"]' in STYLE
     assert '.search-result-kind[data-kind="bus_route"]' in STYLE
+
+
+def test_detail_panel_has_a_focus_trap_and_restores_focus_on_close() -> None:
+    """The click-detail panel behaves like a modal overlay (map-layers.js's
+    handleMapClick and search.js's selectSearchResult both open it over the map/sidebar),
+    so it needs: (1) ARIA modal semantics, (2) a Tab/Shift+Tab focus trap so keyboard
+    users can't tab out into the content it's covering, and (3) focus restored to
+    whatever triggered it when it closes, instead of dropping to document.body."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    # ARIA modal semantics, set on open.
+    assert 'panel.setAttribute("role", "dialog");' in detail_js
+    assert 'panel.setAttribute("aria-modal", "true");' in detail_js
+    assert 'panel.setAttribute("aria-labelledby", "detail-panel-title");' in detail_js
+    assert 'id="detail-panel-title"' in detail_js
+    # Tab trap: a keydown listener that wraps focus at the panel's first/last
+    # focusable element, attached directly to the panel so it only ever fires while
+    # focus is already inside it.
+    assert "function trapPanelFocus(ev)" in detail_js
+    assert 'if (ev.key !== "Tab") return;' in detail_js
+    assert "function panelFocusableElements(panel)" in detail_js
+    assert 'panel.addEventListener("keydown", trapPanelFocus);' in detail_js
+    # Focus restoration: the trigger is captured on open and restored on a real close,
+    # but not when one panel is immediately replaced by another (there is nothing to
+    # restore to there -- focus is about to move into the new panel instead).
+    assert "let panelTriggerElement = null;" in detail_js
+    assert "panelTriggerElement = document.activeElement;" in detail_js
+    assert "closeDetailPanel({ restoreFocus: false })" in detail_js
+    assert (
+        "trigger.focus({ preventScroll: true })" in detail_js
+        or "target.focus({ preventScroll: true })" in detail_js
+    )
+    # A one-shot fallback restoration target: search.js's result <li>s don't survive
+    # past selection (clearSearch() tears them down immediately), so search.js hands
+    # off a fallback (the search input) through the same shared-global idiom
+    # highlightedBusRoute already establishes for search -> map communication.
+    assert "let panelFocusFallback = null;" in detail_js
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "panelFocusFallback = el(" in search_js
 
 
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:

@@ -221,6 +221,13 @@ function selectSearchResult(result) {
   if (map) {
     map.flyTo({ center: [result.lon, result.lat], zoom: SEARCH_FLYTO_ZOOM });
   }
+  // clearSearch() below tears down the clicked <li> immediately, so it can't survive as
+  // the detail panel's focus-restoration target (detail-panel.js's panelTriggerElement)
+  // for as long as the panel stays open. Supply the search input itself as a fallback --
+  // the one enduring, still-focusable control this whole interaction started from -- via
+  // the same shared-global handoff highlightedBusRoute already establishes for search ->
+  // map communication.
+  panelFocusFallback = el("search-input");
   const builder = DETAIL_BUILDERS[result.kind];
   if (builder) builder(result.record);
   clearSearch();

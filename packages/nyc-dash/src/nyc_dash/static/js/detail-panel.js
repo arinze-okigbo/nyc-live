@@ -17,6 +17,66 @@ let panelCleanup = null;
 // open/close arriving before the first close's transition finishes cancels the stale
 // timer instead of letting it hide a panel that was just reopened.
 let panelCloseTimer = null;
+// Whatever had focus right before the panel opened -- a clicked search-result <li>
+// (search.js), or document.body if the trigger was a mouse-only deck.gl marker click
+// (deck.gl markers are canvas-drawn, not real focusable DOM nodes). closeDetailPanel
+// restores focus here so keyboard/screen-reader users don't lose their place.
+let panelTriggerElement = null;
+// One-shot fallback restoration target, for callers whose real trigger element won't
+// survive until the panel closes (search.js's result <li>s are torn down by
+// clearSearch() right after selection, so restoring to the <li> itself is impossible
+// once that runs). A caller sets this global immediately before invoking a builder --
+// the same "drive cross-file behavior through a shared global" idiom search.js already
+// uses for highlightedBusRoute -- and openDetailPanel consumes (and clears) it on the
+// very next open. closeDetailPanel falls back to it only if the primary trigger is no
+// longer in the DOM.
+let panelFocusFallback = null;
+let panelTriggerFallback = null;
+// Guards against attaching the Tab-trap keydown listener more than once: the panel
+// element itself is created once in index.html and reused (only its innerHTML and
+// hidden/is-open state change across opens), so the listener only needs attaching once.
+let panelTrapAttached = false;
+
+// "Focusable" for trap purposes: only elements that are actually visible and reachable
+// by Tab right now. getClientRects().length > 0 excludes anything display:none (e.g. a
+// hidden camera-error placeholder), which offsetParent-based checks can miss in edge
+// cases (position:fixed ancestors).
+const PANEL_FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function panelFocusableElements(panel) {
+  return Array.from(panel.querySelectorAll(PANEL_FOCUSABLE_SELECTOR)).filter(
+    (node) => node.getClientRects().length > 0
+  );
+}
+
+// A hand-rolled focus trap (no dependency for something this small): while the panel is
+// open, Tab/Shift+Tab must cycle only among its own focusable elements instead of
+// escaping into the map/sidebar it's visually covering. Attached once, directly on the
+// panel element, so it only ever sees keydowns that bubble up from something already
+// inside the panel -- it's a no-op whenever the panel is hidden.
+function trapPanelFocus(ev) {
+  if (ev.key !== "Tab") return;
+  const panel = el("detail-panel");
+  if (panel.hidden) return;
+  const focusable = panelFocusableElements(panel);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const goingBackward = ev.shiftKey;
+  const atEdge = goingBackward ? active === first : active === last;
+  if (atEdge || !panel.contains(active)) {
+    ev.preventDefault();
+    (goingBackward ? last : first).focus();
+  }
+}
+
+function ensurePanelFocusTrapAttached(panel) {
+  if (panelTrapAttached) return;
+  panel.addEventListener("keydown", trapPanelFocus);
+  panelTrapAttached = true;
+}
 
 function prefersReducedMotion() {
   return (
@@ -25,7 +85,11 @@ function prefersReducedMotion() {
   );
 }
 
-function closeDetailPanel() {
+// `restoreFocus: false` is for the internal call at the top of openDetailPanel, which
+// closes a panel that's about to be immediately replaced by another one -- there's
+// nothing to "restore" to since focus is about to move into the new panel's close
+// button anyway. Every real close (Escape, the × button) uses the default of true.
+function closeDetailPanel({ restoreFocus = true } = {}) {
   if (panelCleanup) {
     panelCleanup();
     panelCleanup = null;
@@ -35,10 +99,30 @@ function closeDetailPanel() {
     panelCloseTimer = null;
   }
   const panel = el("detail-panel");
-  if (panel.hidden) return;
+  const trigger = panelTriggerElement;
+  const fallback = panelTriggerFallback;
+  panelTriggerElement = null;
+  panelTriggerFallback = null;
+  const isUsable = (node) =>
+    node && node.isConnected && typeof node.focus === "function";
+  const restoreFocusIfRequested = () => {
+    if (!restoreFocus) return;
+    // Prefer the real trigger; fall back to whatever panelFocusFallback supplied (e.g.
+    // search.js's #search-input) if the trigger has since been removed from the DOM.
+    // Focusing a detached node throws in some browsers, and even where it doesn't,
+    // there is nothing sensible to restore to -- this is a deliberate no-op rather
+    // than forcing focus onto document.body when neither is usable.
+    const target = isUsable(trigger) ? trigger : isUsable(fallback) ? fallback : null;
+    if (target) target.focus({ preventScroll: true });
+  };
+  if (panel.hidden) {
+    restoreFocusIfRequested();
+    return;
+  }
   if (prefersReducedMotion()) {
     panel.hidden = true;
     panel.innerHTML = "";
+    restoreFocusIfRequested();
     return;
   }
   panel.classList.remove("is-open");
@@ -47,10 +131,11 @@ function closeDetailPanel() {
     panel.innerHTML = "";
     panelCloseTimer = null;
   }, DETAIL_PANEL_TRANSITION_MS);
+  restoreFocusIfRequested();
 }
 
 function openDetailPanel(title, buildBody, iconKey) {
-  closeDetailPanel(); // clears any previous camera refresh / in-flight fetch
+  closeDetailPanel({ restoreFocus: false }); // clears any previous camera refresh / in-flight fetch
   if (panelCloseTimer) {
     // The call above just scheduled a deferred hide+clear because a previous panel was
     // open (see closeDetailPanel). We're about to overwrite that panel's content
@@ -59,18 +144,31 @@ function openDetailPanel(title, buildBody, iconKey) {
     clearTimeout(panelCloseTimer);
     panelCloseTimer = null;
   }
+  // Captured after the closeDetailPanel() call above (which never moves focus itself)
+  // so this reflects whatever the user was actually interacting with when they
+  // triggered *this* open, not a stale reference left over from a previous panel.
+  panelTriggerElement = document.activeElement;
+  panelTriggerFallback = panelFocusFallback;
+  panelFocusFallback = null;
   const panel = el("detail-panel");
+  ensurePanelFocusTrapAttached(panel);
   panel.hidden = false;
   panel.classList.remove("is-open");
+  // role="dialog" + aria-modal="true": this panel behaves like a modal overlay (it
+  // covers map/sidebar content and traps Tab focus while open), so it needs the ARIA
+  // semantics that imply that to assistive tech, not just the visual styling.
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "detail-panel-title");
   panel.innerHTML = `
     <div class="detail-panel-head">
       ${iconKey ? icon(iconKey) : ""}
-      <span class="detail-panel-title">${title}</span>
+      <span class="detail-panel-title" id="detail-panel-title">${title}</span>
       <button type="button" class="detail-panel-close" id="detail-panel-close" aria-label="Close">×</button>
     </div>
     <div class="detail-panel-body" id="detail-panel-body"></div>`;
   const closeBtn = el("detail-panel-close");
-  closeBtn.addEventListener("click", closeDetailPanel);
+  closeBtn.addEventListener("click", () => closeDetailPanel());
   panelCleanup = buildBody(el("detail-panel-body")) || null;
   // Move focus into the panel so keyboard users land somewhere useful, and so
   // Escape-to-close (wired in app.js) works immediately without an extra Tab.
