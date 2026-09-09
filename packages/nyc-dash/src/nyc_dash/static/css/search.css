@@ -1,0 +1,102 @@
+/*
+ * Sidebar search box + results dropdown (js/search.js). Paired with the "Search" section
+ * markup in index.html, placed above the Borough filter in #panel. Reads color tokens
+ * from tokens.css; no new colors introduced.
+ */
+
+.search-box {
+  position: relative;
+  margin: 0 0 16px;
+}
+
+#search-input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+#search-input::placeholder { color: var(--muted); }
+#search-input:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+
+/* Absolutely positioned so the dropdown overlays the sections below it (Borough,
+   Layers) instead of pushing them down and shifting the whole sidebar while typing. */
+.search-results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.search-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.search-result:hover, .search-result:focus-visible {
+  background: rgba(230, 235, 242, 0.08);
+}
+
+.search-result-kind {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted);
+}
+
+/* Same per-layer marker colors layers-panel.css uses for the subway_arrivals and
+   citibike layer icons, so a search result's kind badge visually matches its map pin. */
+.search-result-kind[data-kind="subway"] { color: #f4d35e; border-color: #f4d35e; }
+.search-result-kind[data-kind="citibike"] { color: #104281; border-color: #104281; }
+
+.search-result-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.search-result-label {
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-result-sublabel {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.search-result-empty {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  #search-input { padding: 10px; font-size: 14px; }
+  .search-result { padding: 10px 8px; }
+}

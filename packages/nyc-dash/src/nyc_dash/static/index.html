@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/css/tokens.css" />
     <link rel="stylesheet" href="/css/chrome.css" />
     <link rel="stylesheet" href="/css/layers-panel.css" />
+    <link rel="stylesheet" href="/css/search.css" />
     <link rel="stylesheet" href="/css/detail-panel.css" />
     <link rel="stylesheet" href="/css/alerts-banner.css" />
     <!-- Pinned CDN versions. No API key is used or needed: the basemap style is
@@ -29,6 +30,7 @@
     <script defer src="/js/alerts-banner.js"></script>
     <script defer src="/js/status-panel.js"></script>
     <script defer src="/js/detail-panel.js"></script>
+    <script defer src="/js/search.js"></script>
     <script defer src="/js/data-sync.js"></script>
     <script defer src="/js/app.js"></script>
   </head>
@@ -48,6 +50,21 @@
         <div id="detail-panel" class="detail-panel" hidden></div>
       </div>
       <aside id="panel">
+        <h2>Search</h2>
+        <p class="hint">
+          Find a <b>subway station</b> or <b>Citi Bike dock</b> by name and jump straight
+          to it on the map.
+        </p>
+        <div class="search-box">
+          <input
+            type="search"
+            id="search-input"
+            placeholder="Search subway stations or Citi Bike docks…"
+            aria-label="Search subway stations or Citi Bike docks"
+            autocomplete="off"
+          />
+          <ul id="search-results" class="search-results" role="listbox" hidden></ul>
+        </div>
         <h2>Borough</h2>
         <p class="hint">
           Narrows <b>DOT cameras</b>, <b>311 requests</b>, and <b>restaurant inspections</b>

@@ -23,6 +23,7 @@ JS_FILES = [
     "alerts-banner.js",
     "status-panel.js",
     "detail-panel.js",
+    "search.js",
     "data-sync.js",
     "app.js",
 ]
@@ -30,6 +31,7 @@ CSS_FILES = [
     "tokens.css",
     "chrome.css",
     "layers-panel.css",
+    "search.css",
     "detail-panel.css",
     "alerts-banner.css",
 ]
@@ -219,6 +221,72 @@ def test_borough_filtered_sidebar_counts_reflect_the_active_filter() -> None:
     assert 'boroughCountLabel(env.records, "area", "cameras")' in APP_JS
     assert 'boroughCountLabel(env.records, "borough", "requests")' in APP_JS
     assert 'boroughCountLabel(env.records, "boro", "inspections")' in APP_JS
+
+
+def test_weather_badge_surfaces_the_forecast_via_a_click_popover() -> None:
+    """`WeatherReport.forecast` (contracts.py) is fetched by the backend but must not be
+    discarded: the badge exposes it through a click-toggle popover built from
+    status-panel.js, not a fabricated placeholder and not routed through
+    detail-panel.js (out of scope / owned elsewhere)."""
+    assert "report.forecast" in APP_JS
+    assert "function renderWeatherForecast(periods)" in APP_JS
+    assert "function ensureWeatherPopover()" in APP_JS
+    assert "weather-forecast-popover" in APP_JS
+    assert "weather-forecast-popover" in STYLE
+    # no affordance at all once a real forecast is absent -- never opens on nothing.
+    assert "if (!weatherForecastPeriods.length) return;" in APP_JS
+    assert 'badge.classList.toggle("has-forecast", weatherForecastPeriods.length > 0);' in APP_JS
+    assert ".badge.has-forecast" in STYLE
+
+
+def test_search_box_markup_exists_above_the_borough_section() -> None:
+    """The search input + results list must live in #panel, above the Borough filter
+    (search is the first thing a user reaching for a specific place should see)."""
+    panel_match = re.search(r'<aside id="panel">(.*?)</aside>', INDEX, flags=re.DOTALL)
+    assert panel_match, "could not find #panel in index.html"
+    panel_html = panel_match.group(1)
+    assert "<input" in panel_html and 'id="search-input"' in panel_html
+    assert 'id="search-results"' in panel_html
+    search_pos = panel_html.find('id="search-input"')
+    borough_pos = panel_html.find('id="borough-filter"')
+    assert search_pos != -1 and borough_pos != -1
+    assert search_pos < borough_pos, "search box must come before the Borough section"
+
+
+def test_search_js_searches_subway_and_citibike_over_already_fetched_state() -> None:
+    """Search must read the same `state` map every layer builder reads (no re-fetch, no
+    new endpoint) and must cover both subway_arrivals and citibike, per the brief."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert 'searchRecordsFor("subway_arrivals")' in search_js
+    assert 'searchRecordsFor("citibike")' in search_js
+    assert "state.get(key)" in search_js
+    # An errored feed must never contribute fabricated/stale-looking search results.
+    assert 'entry.envelope.status === "error"' in search_js
+
+
+def test_search_result_selection_flies_to_the_record_and_opens_its_detail_panel() -> None:
+    """Selecting a result must pan the map with flyTo (the same pattern
+    createRecenterControl() in map-layers.js already uses) and open the detail panel
+    through the shared DETAIL_BUILDERS table (detail-panel.js), not a bespoke UI."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "map.flyTo({ center: [result.lon, result.lat], zoom: SEARCH_FLYTO_ZOOM });" in search_js
+    assert "DETAIL_BUILDERS[result.kind]" in search_js
+
+
+def test_search_debounces_input_instead_of_filtering_on_every_keystroke() -> None:
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "SEARCH_DEBOUNCE_MS" in search_js
+    assert "setTimeout(" in search_js and "clearTimeout(searchDebounceTimer)" in search_js
+
+
+def test_search_js_loads_after_its_dependencies_and_before_data_sync() -> None:
+    """search.js reads `state`/`map` (state.js), DETAIL_BUILDERS (detail-panel.js), and
+    el/escapeHtml (utils.js) at call time, so it must load after all three; it has no
+    hard ordering requirement against data-sync.js/app.js beyond that."""
+    local_scripts = re.findall(r'<script defer src="(/js/[a-z-]+\.js)"></script>', INDEX)
+    assert local_scripts.index("/js/search.js") > local_scripts.index("/js/detail-panel.js")
+    assert local_scripts.index("/js/search.js") > local_scripts.index("/js/state.js")
+    assert local_scripts.index("/js/search.js") > local_scripts.index("/js/utils.js")
 
 
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:
