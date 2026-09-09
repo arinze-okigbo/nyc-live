@@ -240,6 +240,9 @@ function ensureIconAtlas() {
 // Zoom the markers grow with: a pictogram needs more pixels than a dot to read as a
 // shape, but at city-wide zoom thousands of large glyphs would be mush, so they stay
 // small until you are actually looking at a neighbourhood.
+// Zoom at which a marker earns a filled backing disc; see markerLayer.
+const DISC_MIN_ZOOM = 12.5;
+
 const ICON_MIN_PX = 15;
 const ICON_MAX_PX = 30;
 const ICON_GROWTH_START_ZOOM = 10;
@@ -258,6 +261,48 @@ function iconSizeForZoom(zoom) {
  * vocabulary and the fallback is guaranteed to be the exact layer we shipped before.
  * `updateTriggers.getFillColor` is renamed with the accessor it guards -- miss that and
  * the colours silently freeze at whatever they were on first paint.
+ */
+// Glyph ink. A flat tinted glyph on the light basemap washed out badly -- pale route
+// colours (N/Q/R/W yellow, the L's grey) all but vanished against pale streets. Each
+// marker is now a filled disc in the record's own colour with the glyph knocked out of
+// it, which is legible over any basemap and reads as a map marker rather than a smudge.
+const MARKER_INK_LIGHT = [255, 255, 255];
+const MARKER_INK_DARK = [10, 12, 16];
+const MARKER_DISC_EDGE = [10, 12, 16, 90];
+
+/** Pick the glyph ink that actually contrasts with the disc under it.
+ *
+ * Neither a fixed white nor a fixed dark glyph works across this palette: white
+ * disappears on the yellow lines, dark disappears on the blue ones. Deciding per record
+ * from WCAG relative luminance keeps every marker readable without touching the hues,
+ * which were validated for colourblind separation and are not ours to repaint.
+ */
+function contrastInk(rgb) {
+  const channel = (value) => {
+    const c = value / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const luminance =
+    0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+  return luminance > 0.45 ? MARKER_INK_DARK : MARKER_INK_LIGHT;
+}
+
+const resolveAccessor = (accessor, d) => (typeof accessor === "function" ? accessor(d) : accessor);
+
+/** Build a point layer as a disc plus its glyph, falling back to the plain dot until
+ * the atlas loads.
+ *
+ * Takes a ScatterplotLayer config plus `iconKey` and translates the radius/fill props to
+ * their IconLayer equivalents, so each builder keeps expressing itself in one vocabulary
+ * and the fallback is exactly the layer we shipped before.
+ *
+ * The disc keeps the caller's `id` and stays the pickable one, so hover highlight lands
+ * on the whole marker and `handleMapClick`'s `DETAIL_BUILDERS[info.layer.id]` lookup
+ * still resolves. The glyph rides on top with a suffixed id and is not pickable, so
+ * clicks fall through to the disc beneath it.
+ *
+ * `updateTriggers.getFillColor` is renamed to the accessor it guards on the glyph layer
+ * -- miss that and the ink silently freezes at whatever it was on first paint.
  */
 function markerLayer(config) {
   const { iconKey, ...scatter } = config;
@@ -283,19 +328,53 @@ function markerLayer(config) {
     const { getFillColor: trigger, ...rest } = obj;
     return { ...rest, getColor: trigger };
   };
-  return new deck.IconLayer({
+  const size = iconSizeForZoom(currentZoom);
+  // Below this, skip the disc and draw the bare glyph in the record's own colour.
+  // A filled disc is a far heavier object than the dot it replaced, and at city-wide
+  // zoom 2,500 bike docks in one borough turn into a solid mass that buries the basemap
+  // and every other layer with it. Zoomed in there is room for the disc and it is worth
+  // it; zoomed out, legibility of the map as a whole matters more than legibility of one
+  // marker, so the glyph carries the meaning on its own.
+  if (currentZoom < DISC_MIN_ZOOM) {
+    return new deck.IconLayer({
+      ...shared,
+      iconAtlas: iconAtlas.url,
+      iconMapping: iconAtlas.mapping,
+      getIcon: () => iconKey,
+      getColor: getFillColor,
+      getSize: size,
+      sizeUnits: "pixels",
+      updateTriggers: renamed(updateTriggers),
+    });
+  }
+  const disc = new deck.ScatterplotLayer({
     ...shared,
+    getPosition: shared.getPosition,
+    getFillColor,
+    radiusUnits: "pixels",
+    getRadius: size * 0.6,
+    stroked: true,
+    getLineColor: MARKER_DISC_EDGE,
+    lineWidthMinPixels: 1,
+    transitions,
+    updateTriggers,
+  });
+  const glyph = new deck.IconLayer({
+    ...shared,
+    id: `${shared.id}-glyph`,
+    pickable: false,
+    autoHighlight: false,
     iconAtlas: iconAtlas.url,
     iconMapping: iconAtlas.mapping,
     getIcon: () => iconKey,
-    getColor: getFillColor,
+    getColor: (d) => contrastInk(resolveAccessor(getFillColor, d)),
     // A plain number, not an accessor: deck.gl prop-diffs it, so the markers resize on
     // zoom without needing an updateTrigger and without re-running per record.
-    getSize: iconSizeForZoom(currentZoom),
+    getSize: size * 0.78,
     sizeUnits: "pixels",
-    transitions: renamed(transitions),
     updateTriggers: renamed(updateTriggers),
   });
+  return [disc, glyph];
 }
 
 function subwayLayer(envelope) {
@@ -689,7 +768,11 @@ function renderLayersNow() {
     if (!entry || !entry.visible || !entry.envelope) continue;
     if (entry.envelope.status === "error") continue;
     const layer = feed.build(entry.envelope, zoom);
-    if (layer) layers.push(layer);
+    // A marker layer is a disc + its glyph (see markerLayer), so a builder may return a
+    // pair. Spread rather than nest: deck.gl wants a flat list, and the order inside the
+    // pair is what puts each glyph on top of its own disc.
+    if (Array.isArray(layer)) layers.push(...layer);
+    else if (layer) layers.push(layer);
   }
   overlay.setProps({ layers });
 }
