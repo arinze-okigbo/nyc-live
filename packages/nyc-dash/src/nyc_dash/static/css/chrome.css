@@ -5,24 +5,33 @@
  */
 
 #topbar {
-  height: var(--topbar-h);
+  min-height: var(--topbar-h);
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 7px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+  /* Sits directly above the map, so it needs its own visual weight -- a border
+     alone reads as flat once map tiles (which can be very light) are underneath. */
+  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.55);
+  position: relative;
+  z-index: 2;
 }
 
 #topbar h1 {
+  flex: 0 0 auto;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.04em;
   margin: 0 8px 0 0;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .badge {
+  flex: 0 1 auto;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 3px 10px;
@@ -31,7 +40,11 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 42vw;
+  /* Scales with viewport but is capped in both directions so a single badge never
+     hogs most of a wide window, nor sits stuck at an unreadable sliver on a narrow
+     one -- flex-wrap on #topbar is what actually keeps things from overlapping;
+     this max-width is just the last-resort ellipsis for a single very long value. */
+  max-width: min(280px, 40vw);
 }
 
 .badge[data-status="fresh"] { color: var(--fresh); border-color: var(--fresh); }
@@ -41,12 +54,34 @@
 .badge[data-mode="polling"] { color: var(--stale); border-color: var(--stale); }
 .badge[data-mode="down"] { color: var(--error); border-color: var(--error); }
 
+/* .banner is toggled via the `hidden` attribute in markup, not a class -- explicitly
+   keep that working now that we set our own `display` for the visible state, since
+   an author rule that sets `display` always wins over the UA [hidden] stylesheet
+   rule regardless of selector specificity. */
+.banner[hidden] { display: none; }
+
 .banner {
-  padding: 8px 14px;
-  background: #3a1f2b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: linear-gradient(180deg, #3a1f2b, #2e1822);
+  border-top: 1px solid rgba(239, 71, 111, 0.4);
   border-bottom: 1px solid var(--error);
+  box-shadow: inset 0 0 0 1px rgba(239, 71, 111, 0.06);
   color: #ffd7e0;
   font-size: 13px;
+}
+
+/* A text-only alert bar reads like leftover debug output; a small warning glyph
+   (no markup change needed -- generated content) makes it clearly an intentional
+   error state rather than an unstyled default. */
+.banner::before {
+  content: "\26A0";
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--error);
 }
 
 main {
@@ -60,27 +95,54 @@ main {
   background: #0b0e13;
 }
 
+/* Vector tiles for all five boroughs take a few seconds to stream in on first
+   load, so a flat dark rectangle behind the spinner reads as broken/stalled. A
+   slow diagonal shimmer across the whole frame reads as "actively loading" --
+   closer to a modern skeleton state -- until the .ready class (added once
+   MapLibre fires 'idle') takes over and this reverts to the plain background
+   the loaded canvas will sit on. */
+#map:not(.ready) {
+  background: linear-gradient(115deg, #0b0e13 30%, #171d27 50%, #0b0e13 70%);
+  background-size: 240% 100%;
+  animation: map-shimmer 2.4s ease-in-out infinite;
+}
+
 /* The basemap covers all five boroughs on first load, so its vector tiles take a
    few seconds to finish arriving over the network -- a plain blank/cream frame in
    that window reads as broken. Fade the map in on the first 'idle' event (all
-   requested tiles loaded) instead of showing that half-loaded state by accident. */
+   requested tiles loaded) instead of showing that half-loaded state by accident.
+   #deckgl-overlay (the marker layer, registered as a MapboxOverlay *control*) is
+   nested several levels deep inside MapLibre's own control DOM, not a direct child
+   of #map -- targeted by id rather than position so this doesn't silently stop
+   matching if that nesting ever changes. Without it, markers rendered before the
+   basemap did, which read as the map being broken rather than still loading. */
 #map .maplibregl-canvas-container,
-#map > canvas {
+#map > canvas,
+#deckgl-overlay {
   opacity: 0;
   transition: opacity 0.5s ease;
 }
 #map.ready .maplibregl-canvas-container,
-#map.ready > canvas {
+#map.ready > canvas,
+#map.ready #deckgl-overlay {
   opacity: 1;
 }
 
+/* Centered pill card (not a full-bleed overlay) so it reads as a small status
+   indicator floating above the shimmering skeleton, rather than a second flat
+   layer stacked on top of it. */
 #map-loading {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 8px;
+  padding: 8px 16px;
+  background: rgba(16, 20, 26, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 999px;
   color: var(--muted);
   font-size: 13px;
   pointer-events: none;
@@ -95,8 +157,22 @@ main {
   border: 2px solid var(--line);
   border-top-color: var(--muted);
   animation: spin 0.8s linear infinite;
+  flex: 0 0 auto;
 }
+
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes map-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #map-loading .spinner { animation: none; }
+  #map:not(.ready) {
+    animation: none;
+    background: #10141b;
+  }
+}
 
 .deck-tooltip {
   font-size: 12px;
@@ -104,4 +180,34 @@ main {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 8px !important;
+}
+
+/* Below roughly 900px the 300px-fixed sidebar next to the map leaves too little
+   room for either to be usable. Stack the map above the layers panel instead and
+   let the page itself scroll -- the topbar can also wrap to a second line here, so
+   the layout height is no longer pinned to the single-row --topbar-h. */
+@media (max-width: 900px) {
+  html, body { height: auto; min-height: 100%; }
+
+  main {
+    flex-direction: column;
+    height: auto;
+  }
+
+  #map {
+    flex: 0 0 auto;
+    width: 100%;
+    height: 50vh;
+    min-height: 260px;
+  }
+
+  main #panel {
+    flex: 1 1 auto;
+    width: 100%;
+    max-height: none;
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+
+  .badge { max-width: min(200px, 60vw); }
 }
