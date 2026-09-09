@@ -267,3 +267,31 @@
 
 .density-legend-person { background: var(--text); }
 .density-legend-vehicle { background: var(--stale); }
+
+/* Inspection history: same list shell as .detail-stop-list (subway stop list), but
+   each row is two lines (date/grade/score, then the violation text) instead of one,
+   so it gets its own row layout rather than reusing .detail-stop-list li directly. */
+.inspection-history-list li {
+  display: block;
+  padding: 5px 0;
+}
+
+.inspection-history-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text);
+}
+
+.inspection-history-violation {
+  margin: 2px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.detail-subhead-note {
+  margin-top: 4px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 11px;
+}

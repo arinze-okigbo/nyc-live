@@ -244,17 +244,87 @@ function cameraDetail(camera) {
   );
 }
 
+const INSPECTION_HISTORY_LIMIT = 8;
+const INSPECTION_VIOLATION_TRUNCATE_LENGTH = 90;
+
+// NYC publishes one row per violation per inspection, so the same `camis` (restaurant
+// id) commonly recurs across the already-fetched dohmh_inspections records -- once for
+// each violation on each visit. This pulls every OTHER row for the clicked restaurant
+// out of that already-loaded set (no new fetch: the data is already in `state`),
+// excluding the clicked record itself by identity, newest inspection_date first.
+function otherInspectionsForCamis(record) {
+  const entry = state.get("dohmh_inspections");
+  const records = (entry && entry.envelope && entry.envelope.records) || [];
+  return records
+    .filter((r) => r !== record && r.camis === record.camis)
+    .sort((a, b) => {
+      const aTime = a.inspection_date ? Date.parse(a.inspection_date) : 0;
+      const bTime = b.inspection_date ? Date.parse(b.inspection_date) : 0;
+      return bTime - aTime;
+    });
+}
+
+function truncate(text, maxLength) {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+// hhmmss() (utils.js) renders time-of-day only, which is right for "Inspected" up top
+// (a single recent timestamp) but useless for telling apart history rows that are
+// often months or years apart. This renders the calendar date instead.
+function inspectionHistoryDate(iso) {
+  if (!iso) return "unknown date";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+}
+
+// Same visual treatment as the subway stop list (.detail-stop-list), so this reads as
+// one consistent "detail list" pattern across layers rather than a bespoke table.
+function inspectionHistoryHtml(others) {
+  if (!others.length) {
+    return emptyStateHtml(icon("chart"), "No other inspections on file.");
+  }
+  const shown = others.slice(0, INSPECTION_HISTORY_LIMIT);
+  const rows = shown
+    .map((r) => {
+      const when = inspectionHistoryDate(r.inspection_date);
+      const grade = escapeHtml(r.grade || "ungraded");
+      const score = r.score != null ? r.score : "—";
+      const violation = escapeHtml(
+        truncate(r.violation_description || "no violation recorded", INSPECTION_VIOLATION_TRUNCATE_LENGTH)
+      );
+      return `<li>
+        <div class="inspection-history-row-head">
+          <span>${when}</span>
+          <span>grade ${grade} · score ${score}</span>
+        </div>
+        <p class="inspection-history-violation">${violation}</p>
+      </li>`;
+    })
+    .join("");
+  const omitted = others.length - shown.length;
+  const note =
+    omitted > 0
+      ? `<p class="detail-subhead detail-subhead-note">+${omitted} more not shown</p>`
+      : "";
+  return `<ul class="detail-stop-list inspection-history-list">${rows}</ul>${note}`;
+}
+
 function inspectionDetail(record) {
   openDetailPanel(
     escapeHtml(record.dba || "Unnamed restaurant"),
     (body) => {
-      body.innerHTML = fieldsHtml([
-        ["Cuisine", escapeHtml(record.cuisine || "—")],
-        ["Grade", escapeHtml(record.grade || "ungraded")],
-        ["Score", record.score != null ? record.score : "—"],
-        ["Inspected", record.inspection_date ? hhmmss(record.inspection_date) : "—"],
-        ["Latest violation", escapeHtml(record.violation_description || "none recorded")],
-      ]);
+      const others = otherInspectionsForCamis(record);
+      body.innerHTML =
+        fieldsHtml([
+          ["Cuisine", escapeHtml(record.cuisine || "—")],
+          ["Grade", escapeHtml(record.grade || "ungraded")],
+          ["Score", record.score != null ? record.score : "—"],
+          ["Inspected", record.inspection_date ? inspectionHistoryDate(record.inspection_date) : "—"],
+          ["Latest violation", escapeHtml(record.violation_description || "none recorded")],
+        ]) +
+        `<p class="detail-subhead">${icon("chart")} Inspection history</p>
+         ${inspectionHistoryHtml(others)}`;
     },
     "dohmh_inspections"
   );
