@@ -17,6 +17,13 @@
  * (state.js) and lets busLayer() (map-layers.js) bring that route's vehicles forward on
  * the map already on screen, the same "drive a map layer through a shared global" idiom
  * alerts-banner.js's route chips already established for highlightedRoute.
+ *
+ * Keyboard: ArrowUp/ArrowDown move a highlight through the open results (aria-
+ * activedescendant on #search-input, per index.html's role="combobox" -- see
+ * syncHighlight below), Enter selects the highlighted result (or the first one, if
+ * none has been highlighted yet), Escape clears -- the results themselves are not real
+ * Tab stops (tabindex="-1"), so without this a keyboard-only user could see results but
+ * never select one.
  */
 
 // A keystroke-by-keystroke re-filter over ~800 subway arrivals + ~2500 Citi Bike
@@ -32,6 +39,12 @@ const SEARCH_FLYTO_ZOOM = 16;
 
 let searchDebounceTimer = null;
 let currentSearchResults = [];
+// Index into currentSearchResults the user has reached with ArrowUp/ArrowDown, or -1
+// for "nothing highlighted yet" -- see moveHighlight/syncHighlight below. Focus itself
+// never leaves #search-input (a real <li> can't take focus: they're tabindex="-1" on
+// purpose, see renderSearchResults), so this is tracked as plain state, the same
+// "shared mutable value, no import machinery" idiom state.js's own globals use.
+let highlightedResultIndex = -1;
 
 function searchNormalize(text) {
   return text.trim().toLowerCase();
@@ -221,31 +234,76 @@ function searchKindLabel(kind) {
   return SEARCH_KIND_LABELS[kind] || kind;
 }
 
+// Reflects `highlightedResultIndex` onto the DOM: this is the ARIA 1.2 "listbox
+// autocomplete" pattern (index.html's #search-input carries role="combobox" +
+// aria-controls="search-results" for exactly this) -- focus stays on the text input the
+// whole time, and `aria-activedescendant` is how a screen reader is told which <li> is
+// "current" instead. The matching item also gets a visible `.is-active` class (paired
+// with the existing :hover/:focus-visible treatment in search.css) so sighted keyboard
+// users get the same feedback. Called after every render and after every arrow-key move.
+function syncHighlight() {
+  const input = el("search-input");
+  const items = document.querySelectorAll("#search-results .search-result[data-index]");
+  items.forEach((item) => {
+    const isActive = Number(item.dataset.index) === highlightedResultIndex;
+    item.classList.toggle("is-active", isActive);
+    item.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+  if (!input) return;
+  if (highlightedResultIndex === -1) {
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+  const activeItem = el(`search-result-${highlightedResultIndex}`);
+  if (activeItem) {
+    input.setAttribute("aria-activedescendant", activeItem.id);
+    activeItem.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function setSearchExpanded(expanded) {
+  const input = el("search-input");
+  if (input) input.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+// Clamps rather than wraps: at either end of the list, repeating the same arrow key
+// just stays put instead of jumping to the opposite end, which is easier to reason
+// about while scanning a handful of grouped results than a carousel would be.
+function moveHighlight(delta) {
+  if (!currentSearchResults.length) return;
+  const max = currentSearchResults.length - 1;
+  highlightedResultIndex =
+    highlightedResultIndex === -1
+      ? (delta > 0 ? 0 : max)
+      : Math.max(0, Math.min(max, highlightedResultIndex + delta));
+  syncHighlight();
+}
+
 function renderSearchResults(results, query) {
   const list = el("search-results");
   if (!query) {
     list.hidden = true;
     list.innerHTML = "";
-    return;
-  }
-  if (!results.length) {
+  } else if (!results.length) {
     list.hidden = false;
     list.innerHTML = `<li class="search-result-empty">No matches for "${escapeHtml(query)}"</li>`;
-    return;
-  }
-  list.hidden = false;
-  list.innerHTML = results
-    .map(
-      (result, index) => `
-      <li class="search-result" role="option" data-index="${index}" tabindex="-1">
+  } else {
+    list.hidden = false;
+    list.innerHTML = results
+      .map(
+        (result, index) => `
+      <li class="search-result" id="search-result-${index}" role="option" data-index="${index}" tabindex="-1" aria-selected="false">
         <span class="search-result-kind" data-kind="${result.kind}">${searchKindLabel(result.kind)}</span>
         <span class="search-result-text">
           <span class="search-result-label">${escapeHtml(result.label)}</span>
           <span class="search-result-sublabel">${escapeHtml(result.sublabel)}</span>
         </span>
       </li>`
-    )
-    .join("");
+      )
+      .join("");
+  }
+  setSearchExpanded(!list.hidden);
+  syncHighlight();
 }
 
 // A bus-route search result implies the user wants to see that route on the map, and
@@ -303,6 +361,7 @@ function clearSearch() {
   const input = el("search-input");
   if (input) input.value = "";
   currentSearchResults = [];
+  highlightedResultIndex = -1;
   renderSearchResults([], "");
 }
 
@@ -311,6 +370,10 @@ function handleSearchInput(ev) {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(() => {
     currentSearchResults = runSearch(rawQuery);
+    // A fresh set of results has no highlight yet -- always start from "nothing
+    // selected" rather than carrying an index over from the previous query, which
+    // could silently point at an unrelated row (or past the end of a shorter list).
+    highlightedResultIndex = -1;
     renderSearchResults(currentSearchResults, searchNormalize(rawQuery));
   }, SEARCH_DEBOUNCE_MS);
 }
@@ -327,8 +390,36 @@ function initSearch() {
   const results = el("search-results");
   if (!input || !results) return; // markup not present; nothing to wire up
   input.addEventListener("input", handleSearchInput);
+  // ArrowUp/ArrowDown/Enter: the keyboard half of the results list. Before this, the
+  // dropdown's <li role="option"> items were reachable by mouse only -- they carry
+  // tabindex="-1" on purpose (see renderSearchResults), so Tab skips straight over
+  // them into whatever's rendered next in #panel, and there was no other way to pick
+  // a result without a pointer. This keeps focus on the input itself (the standard
+  // ARIA combobox-with-listbox-autocomplete pattern -- see syncHighlight) rather than
+  // moving real DOM focus onto an <li>.
   input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") clearSearch();
+    if (ev.key === "Escape") {
+      clearSearch();
+      return;
+    }
+    if (ev.key === "ArrowDown") {
+      if (!currentSearchResults.length) return;
+      ev.preventDefault(); // don't let the caret jump to the end of the input's text
+      moveHighlight(1);
+      return;
+    }
+    if (ev.key === "ArrowUp") {
+      if (!currentSearchResults.length) return;
+      ev.preventDefault();
+      moveHighlight(-1);
+      return;
+    }
+    if (ev.key === "Enter") {
+      if (!currentSearchResults.length) return;
+      ev.preventDefault(); // no surrounding <form> to submit, but stay explicit
+      const index = highlightedResultIndex === -1 ? 0 : highlightedResultIndex;
+      selectSearchResult(currentSearchResults[index]);
+    }
   });
   results.addEventListener("click", handleSearchResultClick);
   // Clicking anywhere outside the search box dismisses an open results list, the same

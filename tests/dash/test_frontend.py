@@ -437,6 +437,33 @@ def test_search_ranks_point_based_results_by_distance_from_the_map_center() -> N
     assert ".sort((a, b) => a[0].localeCompare(b[0]))" in bus_fn
 
 
+def test_search_results_are_keyboard_reachable_not_just_clickable() -> None:
+    """The results <li>s are tabindex="-1" on purpose (they're not real Tab stops), so
+    without dedicated key handling a keyboard-only user could see results but never
+    select one. ArrowUp/ArrowDown must move a highlight (reflected as
+    aria-activedescendant on the ARIA combobox input, per the standard "listbox
+    autocomplete" pattern) and Enter must select the highlighted result -- or the first
+    one, if none has been highlighted yet -- the same handoff a mouse click already
+    uses (selectSearchResult), not a bespoke keyboard-only path."""
+    search_js = (STATIC_DIR / "js" / "search.js").read_text()
+    assert "function syncHighlight()" in search_js
+    assert "function moveHighlight(delta)" in search_js
+    assert "let highlightedResultIndex = -1;" in search_js
+    assert 'input.setAttribute("aria-activedescendant", activeItem.id);' in search_js
+    # arrow keys and Enter are wired on the same input keydown listener Escape uses.
+    assert 'if (ev.key === "ArrowDown") {' in search_js
+    assert 'if (ev.key === "ArrowUp") {' in search_js
+    assert 'if (ev.key === "Enter") {' in search_js
+    assert "moveHighlight(1);" in search_js
+    assert "moveHighlight(-1);" in search_js
+    assert "selectSearchResult(currentSearchResults[index]);" in search_js
+    # index.html wires the ARIA combobox semantics aria-activedescendant depends on.
+    assert 'role="combobox"' in INDEX
+    assert 'aria-controls="search-results"' in INDEX
+    style = (STATIC_DIR / "css" / "search.css").read_text()
+    assert ".search-result.is-active" in style
+
+
 def test_search_kind_badge_css_exists_for_cameras_and_bus_routes() -> None:
     """The 4th/5th result-kind badges (cameras, bus_route) must have their own color
     rule, following the exact per-kind selector pattern subway/citibike already use."""

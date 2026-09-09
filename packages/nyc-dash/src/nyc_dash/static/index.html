@@ -70,8 +70,18 @@
             placeholder="Search stations, bike docks, cameras, or bus routes…"
             aria-label="Search subway stations, Citi Bike docks, DOT cameras, or bus routes"
             autocomplete="off"
+            role="combobox"
+            aria-expanded="false"
+            aria-controls="search-results"
+            aria-autocomplete="list"
           />
-          <ul id="search-results" class="search-results" role="listbox" hidden></ul>
+          <ul
+            id="search-results"
+            class="search-results"
+            role="listbox"
+            aria-label="Search results"
+            hidden
+          ></ul>
         </div>
         <h2>Borough</h2>
         <p class="hint">

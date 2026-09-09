@@ -51,7 +51,11 @@
   cursor: pointer;
 }
 
-.search-result:hover, .search-result:focus-visible {
+/* .is-active: the keyboard highlight (search.js's syncHighlight/moveHighlight) --
+   focus itself stays on #search-input (see search.js's header comment on the ARIA
+   combobox pattern), so this class is how an ArrowUp/ArrowDown-selected row gets the
+   same visible treatment a real :focus-visible would, for a sighted keyboard user. */
+.search-result:hover, .search-result:focus-visible, .search-result.is-active {
   background: rgba(230, 235, 242, 0.08);
 }
 
