@@ -136,9 +136,29 @@ function layer311(envelope) {
   });
 }
 
-function bikeLayer(envelope) {
+// Below this zoom, all 2500 Citi Bike stations packed into a city-wide view read as
+// noise more than signal -- shrink dots further and fade out near-empty stations so the
+// stations that actually have bikes to offer stand out. Both knobs relax back to the
+// normal look by BIKE_DECLUTTER_ZOOM, so nothing looks thinned-out once zoomed in.
+const BIKE_DECLUTTER_ZOOM = 13;
+
+function bikeLegibility(zoom) {
+  const t = Math.max(0, Math.min(1, (zoom - NYC.zoom) / (BIKE_DECLUTTER_ZOOM - NYC.zoom)));
+  return {
+    // 1.5px min at city-wide zoom, easing up to the normal 2px once zoomed past the
+    // declutter threshold.
+    radiusMinPixels: 1.5 + 0.5 * t,
+    // Near-empty stations (little to no supply) are the least actionable dots on the
+    // map; fading them at low zoom lets full/interesting stations read through the
+    // clutter without hiding any station outright (still visible, just quieter).
+    emptyStationAlpha: Math.round(70 + 90 * t),
+  };
+}
+
+function bikeLayer(envelope, zoom) {
   const data = located(envelope.records);
   if (!data.length) return null;
+  const { radiusMinPixels, emptyStationAlpha } = bikeLegibility(zoom);
   return new deck.ScatterplotLayer({
     id: "citibike",
     data,
@@ -148,13 +168,17 @@ function bikeLayer(envelope) {
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
     getRadius: (d) => 26 + 3 * Math.sqrt(d.capacity || d.bikes_available + d.docks_available || 1),
-    radiusMinPixels: 2,
+    radiusMinPixels,
     radiusMaxPixels: 14,
     getFillColor: (d) => {
       const total = d.capacity || d.bikes_available + d.docks_available;
       if (!total) return [...MUTED_INK, 160];
       const ratio = d.bikes_available / total;
-      return [...lerpColor(SEQUENTIAL_BLUE_LIGHT, SEQUENTIAL_BLUE_DARK, ratio), 190];
+      const color = lerpColor(SEQUENTIAL_BLUE_LIGHT, SEQUENTIAL_BLUE_DARK, ratio);
+      // Near-zero supply is real information (worth knowing this station is out), so it
+      // is faded, never hidden -- just deprioritized visually at low zoom.
+      const alpha = ratio < 0.05 ? emptyStationAlpha : 190;
+      return [...color, alpha];
     },
     getLineColor: [255, 255, 255, 140],
     lineWidthMinPixels: 1,
@@ -165,6 +189,14 @@ function bikeLayer(envelope) {
     transitions: {
       getFillColor: UPDATE_TRANSITION_MS,
       getRadius: UPDATE_TRANSITION_MS,
+    },
+    // getFillColor's alpha term depends on zoom (via emptyStationAlpha) as well as the
+    // envelope, independent of either alone -- both need to be in the trigger key or a
+    // refresh with no zoom change (or vice versa) would leave stale colors on the GPU.
+    // radiusMinPixels is a plain (non-accessor) prop, so ordinary prop diffing on the
+    // freshly-constructed layer already picks up its change; it needs no trigger here.
+    updateTriggers: {
+      getFillColor: [envelope.fetched_at, zoom],
     },
   });
 }
@@ -273,13 +305,16 @@ const STREAM_KEYS = FEEDS.map((f) => f.key).concat([WEATHER_KEY]);
 
 function renderLayersNow() {
   if (!overlay) return;
+  // Only bikeLayer reads this second argument (for zoom-aware decluttering); every other
+  // builder's signature is (envelope) and simply ignores the extra positional arg.
+  const zoom = map ? map.getZoom() : NYC.zoom;
   const layers = [];
   for (const feed of FEEDS) {
     const entry = state.get(feed.key);
     // status === "error" means there is no usable data: the layer is not drawn.
     if (!entry || !entry.visible || !entry.envelope) continue;
     if (entry.envelope.status === "error") continue;
-    const layer = feed.build(entry.envelope);
+    const layer = feed.build(entry.envelope, zoom);
     if (layer) layers.push(layer);
   }
   overlay.setProps({ layers });
@@ -345,4 +380,43 @@ function tooltip({ object, layer }) {
     };
   }
   return null;
+}
+
+// A MapLibre IControl (the same onAdd/onRemove contract NavigationControl already uses
+// in app.js): flies back to the city-wide default view on click. `map.addControl(
+// createRecenterControl(), "top-left")` puts it directly below the existing zoom control.
+function createRecenterControl() {
+  return {
+    onAdd(controlMap) {
+      const container = document.createElement("div");
+      container.className = "maplibregl-ctrl maplibregl-ctrl-group";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.title = "Recenter on NYC";
+      button.setAttribute("aria-label", "Recenter on NYC");
+      button.textContent = "⌖"; // target/position glyph, no icon sprite needed
+      button.addEventListener("click", () => {
+        controlMap.flyTo({ center: [NYC.longitude, NYC.latitude], zoom: NYC.zoom });
+      });
+      container.appendChild(button);
+
+      // Citi Bike's radiusMinPixels depends on the live zoom level (see bikeLegibility
+      // above), which changes continuously as the user zooms with no new envelope data
+      // to trigger a rebuild on its own. This is the first point in map-layers.js where a
+      // live map instance exists, so it is also the natural place to wire that up.
+      controlMap.on("zoom", renderLayers);
+
+      this._container = container;
+      this._map = controlMap;
+      return container;
+    },
+    onRemove() {
+      if (this._map) this._map.off("zoom", renderLayers);
+      if (this._container && this._container.parentNode) {
+        this._container.parentNode.removeChild(this._container);
+      }
+      this._map = null;
+      this._container = null;
+    },
+  };
 }

@@ -23,6 +23,7 @@ function initMap() {
     attributionControl: { compact: true },
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
+  map.addControl(createRecenterControl(), "top-left");
   map.on("error", (ev) => {
     if (ev && ev.error && /style|tile/i.test(String(ev.error.message || ""))) {
       banner(`Basemap tiles unavailable (${BASEMAP_STYLE}); data layers still update.`);
