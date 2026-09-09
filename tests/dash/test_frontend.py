@@ -26,7 +26,13 @@ JS_FILES = [
     "data-sync.js",
     "app.js",
 ]
-CSS_FILES = ["tokens.css", "chrome.css", "layers-panel.css", "detail-panel.css", "alerts-banner.css"]
+CSS_FILES = [
+    "tokens.css",
+    "chrome.css",
+    "layers-panel.css",
+    "detail-panel.css",
+    "alerts-banner.css",
+]
 
 APP_JS = "\n".join((STATIC_DIR / "js" / name).read_text() for name in JS_FILES)
 STYLE = "\n".join((STATIC_DIR / "css" / name).read_text() for name in CSS_FILES)

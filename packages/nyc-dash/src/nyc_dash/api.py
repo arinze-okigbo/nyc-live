@@ -276,6 +276,21 @@ ROUTES: tuple[FeedRoute, ...] = (
         ),
     ),
     FeedRoute(
+        key="mta_subway_shapes",
+        feed=FeedName.MTA_SUBWAY_SHAPES,
+        label="Subway route shapes",
+        handler=_plain(FeedName.MTA_SUBWAY_SHAPES),
+        geo=False,
+        default_limit=None,
+        aliases=("subway_shapes",),
+        description=(
+            "Static GTFS route polylines (Envelope[SubwayRouteShape]); 24 hour TTL. "
+            "Each record is one shape_id's ordered (lat, lon) points -- a route has many "
+            "shapes (branches, express/local, direction), never one polyline per route. "
+            "No top-level lat/lon, so geo filtering is not supported here."
+        ),
+    ),
+    FeedRoute(
         key="mta_subway_stops",
         feed=FeedName.MTA_SUBWAY_STOPS,
         label="Subway stops",

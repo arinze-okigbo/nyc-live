@@ -14,6 +14,7 @@ from nyc_live.contracts import FeedName, now_utc
 from nyc_live.feeds.transit import (
     SUBWAY_FEED_SLUGS,
     SubwayAlertsAdapter,
+    SubwayShapesAdapter,
     SubwayStopsAdapter,
     SubwayTripsAdapter,
     reset_raw_cache,
@@ -87,4 +88,26 @@ async def test_live_subway_stops(client: httpx.AsyncClient, settings: Settings) 
     parents = {s.parent_station for s in snap.records if s.parent_station}
     assert parents <= set(by_id)
     assert sum(bool(s.routes) for s in snap.records) > 0.9 * len(snap.records)
+    assert snap.upstream_generated_at is not None  # S3 Last-Modified header
+
+
+async def test_live_subway_shapes(client: httpx.AsyncClient, settings: Settings) -> None:
+    snap = await SubwayShapesAdapter(client=client, settings=settings).fetch()
+    assert snap.feed is FeedName.MTA_SUBWAY_SHAPES
+    # 2026-09-08 bundle: 257 shape_ids across 29 routes, 150,744 points total
+    assert len(snap.records) >= 200
+    routes = {s.route_id for s in snap.records}
+    bad = sorted(r for r in routes if not NYCT_ROUTE_RE.match(r))
+    assert not bad, f"unexpected route ids: {bad}"
+    assert len(routes) >= 20
+    by_route: dict[str, int] = {}
+    for s in snap.records:
+        by_route[s.route_id] = by_route.get(s.route_id, 0) + 1
+    assert all(count >= 2 for count in by_route.values())  # every route has multiple shapes
+    assert all(len(s.points) >= 2 for s in snap.records)
+    # the adapter only drops a shape whose points are entirely outside NYC_BBOX, so every
+    # surviving shape has at least one point inside it (not necessarily every point)
+    assert all(any(in_nyc_bbox(lat, lon) for lat, lon in s.points) for s in snap.records)
+    with_dir = sum(s.direction is not None for s in snap.records)
+    assert with_dir / len(snap.records) > 0.9
     assert snap.upstream_generated_at is not None  # S3 Last-Modified header

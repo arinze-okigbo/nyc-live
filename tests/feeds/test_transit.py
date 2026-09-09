@@ -36,6 +36,7 @@ from nyc_live.feeds.transit import (
     STATIC_GTFS_URL,
     SUBWAY_FEED_SLUGS,
     SubwayAlertsAdapter,
+    SubwayShapesAdapter,
     SubwayStopsAdapter,
     SubwayTripsAdapter,
     alerts_url,
@@ -188,6 +189,132 @@ async def test_stops_replays_recorded_trimmed_gtfs(
     assert by_id["G22"].routes == ["G"]
     assert by_id["S31"].routes == ["SI"]
     assert by_id["A27"].routes == ["A", "C", "E"]
+
+
+async def test_shapes_replays_recorded_trimmed_gtfs(
+    mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    route = mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(
+            200,
+            content=STOPS_FIXTURE.read_bytes(),
+            headers={
+                "content-type": "application/zip",
+                "last-modified": "Thu, 27 Aug 2026 15:02:11 GMT",
+            },
+        )
+    )
+    adapter = SubwayShapesAdapter(client=client, settings=settings)
+    assert isinstance(adapter, FeedAdapter)
+    snap = await adapter.fetch()
+    assert route.call_count == 1
+    assert snap.feed is FeedName.MTA_SUBWAY_SHAPES
+    assert snap.source_url == settings.mta_static_gtfs_url
+    assert snap.stale_after == snap.fetched_at + DEFAULT_TTL[FeedName.MTA_SUBWAY_SHAPES]
+    assert snap.upstream_generated_at == datetime(2026, 8, 27, 15, 2, 11, tzinfo=UTC)
+
+    by_id = {s.shape_id: s for s in snap.records}
+    assert len(by_id) == 26  # 13 routes x 2 shapes (N/S) in the trimmed fixture
+    one_n = by_id["1..N03R"]
+    assert one_n.route_id == "1" and one_n.direction == "N"
+    # ordering follows shape_pt_sequence (0..5), matching the real recorded rows exactly
+    assert one_n.points == [
+        (40.702068, -74.013664),
+        (40.703199, -74.014792),
+        (40.703226, -74.014820),
+        (40.703253, -74.014846),
+        (40.703280, -74.014870),
+        (40.703307, -74.014893),
+    ]
+    assert by_id["R..S71R"].route_id == "R" and by_id["R..S71R"].direction == "S"
+    assert by_id["R..N93R"].route_id == "R" and by_id["R..N93R"].direction == "N"
+    # a shape_id sharing the "N.." prefix with route N's own shapes but belonging to W --
+    # proof the join is via trips.txt, not a string guess at route_id from shape_id
+    assert by_id["N..S72R"].route_id == "W"
+    assert by_id["N..N70R"].route_id == "W"
+    assert by_id["N..S20R"].route_id == "N"
+    routes = {s.route_id for s in snap.records}
+    assert routes == {"1", "2", "3", "A", "C", "E", "G", "L", "N", "Q", "R", "SI", "W"}
+    # every route has multiple shapes in the live bundle; the trimmed fixture keeps that
+    # shape (branches/express/local/direction), never a flat route -> one polyline
+    by_route: dict[str, int] = {}
+    for s in snap.records:
+        by_route[s.route_id] = by_route.get(s.route_id, 0) + 1
+    assert all(count >= 2 for count in by_route.values())
+
+
+async def test_shapes_drops_out_of_bbox_and_unjoined_shapes(
+    mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    with zipfile.ZipFile(STOPS_FIXTURE) as src:
+        stops_txt = src.read("stops.txt").decode("utf-8")
+        trips_txt = src.read("trips.txt").decode("utf-8")
+        stop_times_txt = src.read("stop_times.txt").decode("utf-8")
+        shapes_txt = src.read("shapes.txt").decode("utf-8")
+    # a shape entirely in Philadelphia, joined to a trip -> dropped as outside NYC
+    shapes_txt += "ZZ..N01R,0,39.952583,-75.165222\nZZ..N01R,1,39.953000,-75.166000\n"
+    trips_txt += "Z,ztrip1,Weekday,Nowhere,0,ZZ..N01R\n"
+    # a shape with no matching trips.txt row at all -> dropped as unjoined, not fabricated
+    shapes_txt += "ORPHAN..N01R,0,40.700000,-74.000000\nORPHAN..N01R,1,40.701000,-74.001000\n"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("stops.txt", stops_txt)
+        zf.writestr("trips.txt", trips_txt)
+        zf.writestr("stop_times.txt", stop_times_txt)
+        zf.writestr("shapes.txt", shapes_txt)
+    mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(200, content=buf.getvalue())
+    )
+    adapter = SubwayShapesAdapter(client=client, settings=settings)
+    snap = await adapter.fetch()
+    ids = {s.shape_id for s in snap.records}
+    assert "ZZ..N01R" not in ids
+    assert "ORPHAN..N01R" not in ids
+    assert len(ids) == 26
+
+
+async def test_shapes_404_is_not_found(
+    mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    mock.get(settings.mta_static_gtfs_url).mock(return_value=httpx.Response(404))
+    adapter = SubwayShapesAdapter(client=client, settings=settings)
+    with pytest.raises(FeedUnavailable) as excinfo:
+        await adapter.fetch()
+    assert excinfo.value.kind is ErrorKind.NOT_FOUND
+    assert excinfo.value.url == settings.mta_static_gtfs_url
+
+
+async def test_shapes_zip_without_shapes_txt_is_upstream_parse(
+    mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    """The stops-only trimmed history would 404 on shapes.txt before shapes.txt was added
+    to the fixture; a zip missing it entirely must still fail loudly, not return zero
+    shapes silently."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("agency.txt", "agency_id,agency_name\nMTA NYCT,MTA New York City Transit\n")
+    mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(200, content=buf.getvalue())
+    )
+    adapter = SubwayShapesAdapter(client=client, settings=settings)
+    with pytest.raises(FeedUnavailable) as excinfo:
+        await adapter.fetch()
+    assert excinfo.value.kind is ErrorKind.UPSTREAM_PARSE
+    assert "shapes.txt" in excinfo.value.message
+
+
+async def test_shapes_and_stops_share_the_raw_bytes_cache(
+    mock: respx.MockRouter, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    route = mock.get(settings.mta_static_gtfs_url).mock(
+        return_value=httpx.Response(200, content=STOPS_FIXTURE.read_bytes())
+    )
+    stops = SubwayStopsAdapter(client=client, settings=settings)
+    shapes = SubwayShapesAdapter(client=client, settings=settings)
+    stops_snap = await stops.fetch()
+    shapes_snap = await shapes.fetch()
+    assert route.call_count == 1  # the second adapter is served the cached bytes
+    assert shapes_snap.fetched_at == stops_snap.fetched_at
 
 
 # ---------------------------------------------------------------------------

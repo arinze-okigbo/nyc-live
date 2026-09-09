@@ -39,13 +39,21 @@ class RateLimiter:
     def __init__(self, min_interval: timedelta) -> None:
         self.min_interval_s = min_interval.total_seconds()
         self._last: dict[str, float] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        # (lock, owning loop): an asyncio.Lock acquired under one event loop raises
+        # RuntimeError if acquired again under a different one. This instance can
+        # outlive any single loop (it's held on a module-level object across an
+        # entire test session, where each test function typically gets its own
+        # fresh loop), so a stale lock is replaced rather than reused whenever the
+        # currently running loop doesn't match the one it was created under.
+        self._locks: dict[str, tuple[asyncio.Lock, asyncio.AbstractEventLoop]] = {}
 
     def _lock(self, key: str) -> asyncio.Lock:
-        lock = self._locks.get(key)
-        if lock is None:
-            lock = self._locks[key] = asyncio.Lock()
-        return lock
+        loop = asyncio.get_running_loop()
+        entry = self._locks.get(key)
+        if entry is None or entry[1] is not loop:
+            entry = (asyncio.Lock(), loop)
+            self._locks[key] = entry
+        return entry[0]
 
     async def wait(self, key: str) -> float:
         """Block until allowed; returns seconds actually slept."""

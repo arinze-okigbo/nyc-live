@@ -45,6 +45,10 @@ Parsing notes
 * ``SubwayStop.routes`` is derived from ``trips.txt`` (trip -> route) joined with
   ``stop_times.txt`` (trip -> stop), then unioned up to the parent station. Measured cost
   on the 2026-08-27 zip: 0.03 s + 0.50 s, run once per 24 h TTL in a worker thread.
+* ``SubwayRouteShape`` records come from the same zip's ``shapes.txt``, joined to
+  ``route_id`` via ``trips.txt``'s ``shape_id`` column (one route per shape_id in the live
+  bundle). Keyed by shape_id, never flattened to one polyline per route -- every route has
+  multiple shapes (branches, express/local, direction).
 """
 
 from __future__ import annotations
@@ -135,14 +139,23 @@ class RawBytesCache:
 
     def __init__(self) -> None:
         self._entries: dict[str, RawFetch] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        # (lock, owning loop): an asyncio.Lock acquired under one event loop raises
+        # RuntimeError if acquired again under a different one. This cache is a
+        # module-level singleton shared by every adapter that hits the same static
+        # GTFS URL (stops, shapes), so it can outlive any single loop -- in
+        # particular across test functions, which each typically get a fresh loop.
+        # A stale lock is replaced rather than reused whenever the currently running
+        # loop doesn't match the one it was created under.
+        self._locks: dict[str, tuple[asyncio.Lock, asyncio.AbstractEventLoop]] = {}
         self._limiters: dict[float, RateLimiter] = {}
 
     def _lock(self, url: str) -> asyncio.Lock:
-        lock = self._locks.get(url)
-        if lock is None:
-            lock = self._locks[url] = asyncio.Lock()
-        return lock
+        loop = asyncio.get_running_loop()
+        entry = self._locks.get(url)
+        if entry is None or entry[1] is not loop:
+            entry = (asyncio.Lock(), loop)
+            self._locks[url] = entry
+        return entry[0]
 
     def _limiter(self, ttl: timedelta) -> RateLimiter:
         key = ttl.total_seconds()
@@ -523,6 +536,129 @@ def parse_static_gtfs(body: bytes, *, feed: FeedName, url: str) -> StaticGtfsPar
 
 
 # ---------------------------------------------------------------------------
+# Static GTFS parsing: route shapes (runs in a worker thread)
+# ---------------------------------------------------------------------------
+
+_SHAPES_REQUIRED_COLUMNS = ("shape_id", "shape_pt_sequence", "shape_pt_lat", "shape_pt_lon")
+
+
+@dataclass(frozen=True)
+class StaticShapesParse:
+    shapes: list[SubwayRouteShape]
+    dropped_out_of_bbox: int
+    dropped_no_route: int
+    dropped_malformed: int
+
+
+def parse_shapes(zf: zipfile.ZipFile) -> dict[str, list[tuple[float, float]]]:
+    """shape_id -> ordered (lat, lon) points, sorted by shape_pt_sequence.
+
+    Rows with a non-numeric sequence or lat/lon are silently skipped here; the caller
+    counts shapes that end up with fewer than 2 usable points as malformed.
+    """
+    by_shape: dict[str, list[tuple[int, float, float]]] = {}
+    for row in _read_csv(zf, "shapes.txt"):
+        shape_id = (row.get("shape_id") or "").strip()
+        if not shape_id:
+            continue
+        try:
+            seq = int(row["shape_pt_sequence"])
+            lat, lon = float(row["shape_pt_lat"]), float(row["shape_pt_lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        by_shape.setdefault(shape_id, []).append((seq, lat, lon))
+    return {
+        shape_id: [(lat, lon) for _seq, lat, lon in sorted(pts)]
+        for shape_id, pts in by_shape.items()
+    }
+
+
+def _shape_routes(zf: zipfile.ZipFile) -> dict[str, str]:
+    """shape_id -> route_id, from trips.txt. In the live bundle every shape_id belongs to
+    exactly one route; if that ever stops being true, the first trip seen for a shape_id
+    wins rather than silently overwriting with a second route."""
+    shape_route: dict[str, str] = {}
+    for row in _read_csv(zf, "trips.txt"):
+        shape_id = row.get("shape_id")
+        route_id = row.get("route_id")
+        if shape_id and route_id:
+            shape_route.setdefault(shape_id, route_id)
+    return shape_route
+
+
+def parse_static_shapes(body: bytes, *, feed: FeedName, url: str) -> StaticShapesParse:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(body))
+    except zipfile.BadZipFile as exc:
+        raise FeedUnavailable(
+            feed,
+            f"body ({len(body)} bytes) is not a zip archive: {exc}",
+            kind=ErrorKind.UPSTREAM_PARSE,
+            url=url,
+        ) from exc
+    with zf:
+        names = set(zf.namelist())
+        if "shapes.txt" not in names:
+            raise FeedUnavailable(
+                feed,
+                f"zip has no shapes.txt (members: {sorted(names)[:10]})",
+                kind=ErrorKind.UPSTREAM_PARSE,
+                url=url,
+            )
+        if "trips.txt" not in names:
+            raise FeedUnavailable(
+                feed,
+                "zip has no trips.txt; shapes cannot be joined to a route_id",
+                kind=ErrorKind.UPSTREAM_PARSE,
+                url=url,
+            )
+        reader = _read_csv(zf, "shapes.txt")
+        columns = reader.fieldnames or []
+        missing = [c for c in _SHAPES_REQUIRED_COLUMNS if c not in columns]
+        if missing:
+            raise FeedUnavailable(
+                feed,
+                f"shapes.txt is missing columns {missing}; has {list(columns)}",
+                kind=ErrorKind.UPSTREAM_PARSE,
+                url=url,
+            )
+        shape_points = parse_shapes(zf)
+        shape_route = _shape_routes(zf)
+
+    shapes: list[SubwayRouteShape] = []
+    out_of_bbox = no_route = malformed = 0
+    for shape_id, points in shape_points.items():
+        if len(points) < 2:
+            malformed += 1
+            continue
+        route_id = shape_route.get(shape_id)
+        if not route_id:
+            no_route += 1
+            continue
+        if not any(in_nyc_bbox(lat, lon) for lat, lon in points):
+            out_of_bbox += 1
+            continue
+        shapes.append(
+            SubwayRouteShape(
+                shape_id=shape_id,
+                route_id=route_id,
+                direction=direction_from_trip_id(shape_id),
+                points=points,
+            )
+        )
+    if not shapes:
+        raise FeedUnavailable(
+            feed,
+            f"shapes.txt yielded no usable shapes ({len(shape_points)} shape_ids, "
+            f"{malformed} with <2 points, {no_route} unjoined to a route, "
+            f"{out_of_bbox} entirely outside NYC)",
+            kind=ErrorKind.UPSTREAM_PARSE,
+            url=url,
+        )
+    return StaticShapesParse(shapes, out_of_bbox, no_route, malformed)
+
+
+# ---------------------------------------------------------------------------
 # Adapters
 # ---------------------------------------------------------------------------
 
@@ -721,18 +857,20 @@ class SubwayStopsAdapter(_BaseAdapter):
 
 
 class SubwayShapesAdapter(_BaseAdapter):
-    """Static GTFS ``shapes.txt`` route polylines -- stub, not yet implemented.
+    """Static GTFS ``shapes.txt`` route polylines, joined to routes via ``trips.txt``.
 
-    Investigated 2026-09-09: the real bundle has shapes.txt (257 shape_ids, 29 routes,
-    150,744 points, ~164 KB gzipped) joined to routes via trips.txt's shape_id column.
-    Every NYCT route has MULTIPLE shapes (branches, express/local, direction) -- 2 to 35
-    per route -- so this must be keyed by shape_id, never a flat {route_id: polyline}.
-    See SubwayRouteShape in contracts.py for the frozen shape this will return.
-
-    Registered in the adapter registry (feeds/__init__.py) ahead of the real
-    implementation landing, so the registry entry and this stub ship together rather
-    than the registry referencing a class that doesn't exist yet -- same bootstrapping
-    order used for the original mta_bus stub.
+    Reads the same ``settings.mta_static_gtfs_url`` zip as ``SubwayStopsAdapter`` through
+    the shared ``RawBytesCache``: within the 24 h TTL, whichever of the two adapters fetches
+    first fills the cache and the other is served the same bytes with no second download.
+    Every NYCT route has MULTIPLE shapes (branches, express/local, direction) -- 2 to 35 in
+    the 2026-09-08 bundle -- so records are keyed by shape_id, never flattened to a single
+    polyline per route; route_id is kept as a join/filter key. ``direction`` is parsed from
+    the shape_id suffix with the same convention as ``direction_from_trip_id`` (e.g.
+    ``1..N03R`` -> ``"N"``); every shape_id in the live 2026-09 bundle carries the marker,
+    but the field stays optional (``SubwayRouteShape.direction: SubwayDirection | None``)
+    in case that ever stops being true. Shapes whose points fall entirely outside
+    ``NYC_BBOX``, and shapes with no matching route_id in trips.txt, are dropped and
+    counted rather than silently omitted -- see ``parse_static_shapes``.
     """
 
     name = FeedName.MTA_SUBWAY_SHAPES
@@ -743,10 +881,24 @@ class SubwayShapesAdapter(_BaseAdapter):
         return self.settings.mta_static_gtfs_url
 
     async def fetch(self) -> Snapshot[SubwayRouteShape]:
-        raise FeedUnavailable(
-            self.name,
-            "shapes.txt parsing is not implemented yet (investigated, not built -- "
-            "see the class docstring)",
-            kind=ErrorKind.INTERNAL,
-            url=self.source_url,
+        started = time.perf_counter()
+        url = self.source_url
+        raw = await self._raw(url)
+        parsed = await asyncio.to_thread(parse_static_shapes, raw.body, feed=self.name, url=url)
+        if parsed.dropped_out_of_bbox or parsed.dropped_no_route or parsed.dropped_malformed:
+            log.warning(
+                "mta_subway_shapes: dropped %d shapes entirely outside NYC bbox, "
+                "%d with no route_id join, %d with fewer than 2 usable points",
+                parsed.dropped_out_of_bbox,
+                parsed.dropped_no_route,
+                parsed.dropped_malformed,
+            )
+        return Snapshot[SubwayRouteShape](
+            feed=self.name,
+            fetched_at=raw.fetched_at,
+            stale_after=raw.fetched_at + self.ttl,
+            source_url=url,
+            records=parsed.shapes,
+            upstream_generated_at=raw.last_modified,
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
         )

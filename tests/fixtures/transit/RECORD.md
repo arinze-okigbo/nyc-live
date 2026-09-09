@@ -104,3 +104,58 @@ EOF
 If the station set or route assignments change upstream, update the expected values in
 `tests/feeds/test_transit.py::test_stops_replays_recorded_trimmed_gtfs` to match the new
 real rows; do not edit the zip by hand.
+
+## 4. Route shapes (`shapes.txt` inside `gtfs_subway_trimmed.zip`) -- ALREADY RECORDED 2026-09-09
+
+The trimmed zip above did not originally carry `shapes.txt` (only added once
+`SubwayShapesAdapter` needed it). `trips.txt` in the trimmed zip already has a real
+`shape_id` per trip (one real GTFS row, untouched), so this step only adds the matching
+`shapes.txt` rows -- it does not touch `stops.txt`/`trips.txt`/`stop_times.txt`. Kept the
+first 6 real points (by `shape_pt_sequence`, ascending) of each of the 26 shape_ids
+already referenced by the trimmed `trips.txt`, i.e. a contiguous prefix of each real
+shape, not a synthetic point. To re-record after an upstream change:
+
+```bash
+curl -fsS -H "User-Agent: $UA" https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip -o /tmp/gtfs_subway.zip
+uv run python - <<'EOF'
+import csv, io, zipfile
+SRC, DST = "/tmp/gtfs_subway.zip", "tests/fixtures/transit/gtfs_subway_trimmed.zip"
+src = zipfile.ZipFile(SRC)
+
+def read_csv(name):
+    with src.open(name) as f:
+        r = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig", newline=""))
+        return r.fieldnames, list(r)
+
+with zipfile.ZipFile(DST) as existing:
+    with existing.open("trips.txt") as f:
+        existing_trips = list(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig", newline="")))
+    existing_files = {n: existing.read(n) for n in existing.namelist()}
+
+shape_ids = sorted({r["shape_id"] for r in existing_trips if r.get("shape_id")})
+hdr, rows = read_csv("shapes.txt")
+by_shape: dict[str, list[dict]] = {}
+for row in rows:
+    if row["shape_id"] in shape_ids:
+        by_shape.setdefault(row["shape_id"], []).append(row)
+kept = []
+for sid in shape_ids:
+    pts = sorted(by_shape[sid], key=lambda r: int(r["shape_pt_sequence"]))
+    kept.extend(pts[:6])
+
+def csv_bytes(fieldnames, dict_rows):
+    buf = io.StringIO(); w = csv.writer(buf, lineterminator="\n"); w.writerow(fieldnames)
+    for row in dict_rows: w.writerow([row[c] for c in fieldnames])
+    return buf.getvalue().encode()
+
+with zipfile.ZipFile(DST, "w", zipfile.ZIP_DEFLATED) as out:
+    for name, data in existing_files.items():
+        out.writestr(name, data)
+    out.writestr("shapes.txt", csv_bytes(hdr, kept))
+print(len(kept), "shape points for", len(shape_ids), "shapes")
+EOF
+```
+
+If the shape_ids referenced by the trimmed `trips.txt` ever change, update the expected
+values in `tests/feeds/test_transit.py::test_shapes_replays_recorded_trimmed_gtfs` to
+match; do not edit the zip by hand.
