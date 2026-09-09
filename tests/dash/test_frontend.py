@@ -606,6 +606,28 @@ def test_record_gone_state_is_explicit_not_a_silent_freeze() -> None:
     assert "openPanelGone = true;" in detail_js
 
 
+def test_record_gone_state_is_announced_to_screen_readers() -> None:
+    """The record-gone message is a significant, one-time state change happening to
+    content inside a role="dialog" panel a screen-reader user can't re-glance at, so
+    (unlike a routine ETA-tick refresh) it must be announced: emptyStateHtml() takes an
+    opt-in `live` option -- defaulting to false so every other call site (a static empty
+    state, or content already inside its own aria-live wrapper like
+    #camera-density-history/#subway-stop-list) is unaffected -- and showRecordGoneState
+    is the one caller that turns it on."""
+    detail_js = (STATIC_DIR / "js" / "detail-panel.js").read_text()
+    assert "function emptyStateHtml(icon, message, { live = false } = {})" in detail_js
+    assert 'const liveAttrs = live ? \' role="status" aria-live="polite"\' : "";' in detail_js
+    assert '<div class="detail-empty-state"${liveAttrs}>' in detail_js
+    assert "{ live: true }" in detail_js
+    # only showRecordGoneState opts in -- no other emptyStateHtml call passes it.
+    assert detail_js.count("{ live: true }") == 1
+    gone_state_fn = detail_js[detail_js.index("function showRecordGoneState(feedKey) {") :]
+    gone_state_fn = gone_state_fn[: gone_state_fn.index("\n}\n")]
+    assert "{ live: true }" in gone_state_fn
+    # the existing aria-live precedent this follows (loading states), left untouched.
+    assert 'aria-busy="true" aria-live="polite"' in detail_js
+
+
 def test_camera_and_subway_panels_preserve_async_subsections_on_refresh() -> None:
     """cameraDetail's live image poll + one-shot density-history fetch, and subwayDetail's
     one-shot full-stop-list fetch, must NOT restart on every ~15s refresh -- only their

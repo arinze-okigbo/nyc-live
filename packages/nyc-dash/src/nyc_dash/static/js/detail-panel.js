@@ -166,6 +166,19 @@ function refreshOpenDetailPanel(feedKey, envelope) {
   body.scrollTop = scrollTop;
 }
 
+// Accessibility: this is the one live-refresh transition in this file that genuinely
+// needs an announcement. The panel already carries role="dialog"/aria-modal="true"
+// (openDetailPanel), so a screen-reader user knows they're inside a modal, but nothing
+// tells them its content just changed out from under them -- a sighted user simply
+// notices the visual swap. This is a significant, one-time state change (the record
+// disappeared, openPanelGone latches it so it can only fire once per panel), the exact
+// kind of event aria-live is for -- unlike the routine ~15s summary-field refresh in
+// cameraDetail/subwayDetail's `update()` (panelUpdate), which is deliberately left
+// without any live-region treatment: making an ETA tick "polite" would have a screen
+// reader narrate "in 3 min… now in 2 min… now in 1 min" every poll cycle, the exact
+// spammy result a sighted user avoids just by not staring at the panel. The record-gone
+// message stays reachable on demand (it's regular panel content), it just also gets
+// announced once, the moment it appears.
 function showRecordGoneState(feedKey) {
   if (panelCleanup) {
     panelCleanup();
@@ -176,7 +189,8 @@ function showRecordGoneState(feedKey) {
   if (body) {
     body.innerHTML = emptyStateHtml(
       "⚠️",
-      RECORD_GONE_MESSAGES[feedKey] || "This item is no longer being tracked."
+      RECORD_GONE_MESSAGES[feedKey] || "This item is no longer being tracked.",
+      { live: true }
     );
   }
   openPanelRecord = null;
@@ -353,8 +367,21 @@ function fieldsHtml(pairs) {
 // Shared muted-box treatment for "nothing to show" / "this failed" states across every
 // detail builder, so a dead feed or an exhausted trip reads as an intentional message
 // rather than a rendering bug.
-function emptyStateHtml(icon, message) {
-  return `<div class="detail-empty-state">
+//
+// `live` (default false, matching every existing call site's behavior exactly) opts a
+// single instance into being announced to screen readers the moment it's inserted:
+// `role="status"`/`aria-live="polite"` on a *freshly-created* node is picked up by
+// modern browser/AT combinations without needing a pre-existing live region in the DOM
+// (the same pattern toast/alert widgets use) -- so this works even when, unlike
+// #camera-density-history / #subway-stop-list below, there's no already-open wrapper
+// to hang the attribute on ahead of time. Only showRecordGoneState opts in: that's a
+// one-time, significant "this thing is gone" transition, not a routine content refresh,
+// and every other current caller (a static empty state at open time, or content already
+// inside an aria-live wrapper of its own) would get nothing but duplicate/unwanted
+// announcements from turning this on by default.
+function emptyStateHtml(icon, message, { live = false } = {}) {
+  const liveAttrs = live ? ' role="status" aria-live="polite"' : "";
+  return `<div class="detail-empty-state"${liveAttrs}>
     <span class="detail-empty-icon" aria-hidden="true">${icon}</span>
     <p>${escapeHtml(message)}</p>
   </div>`;
