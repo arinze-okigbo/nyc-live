@@ -4,6 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>nyc-live dashboard</title>
+    <!-- Inline SVG favicon, no separate binary asset: a "live pulse" dot (the app's own
+         gold subway/live-marker color, #f4d35e, on the same dark chrome background,
+         #10141a, as --bg in tokens.css) reading as a bright ring+dot at 16x16/32x32. -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2016%2016%27%3E%3Crect%20width%3D%2716%27%20height%3D%2716%27%20rx%3D%273.5%27%20fill%3D%27%2310141a%27%2F%3E%3Ccircle%20cx%3D%278%27%20cy%3D%278%27%20r%3D%275.6%27%20fill%3D%27none%27%20stroke%3D%27%23f4d35e%27%20stroke-width%3D%271.3%27%20stroke-opacity%3D%270.55%27%2F%3E%3Ccircle%20cx%3D%278%27%20cy%3D%278%27%20r%3D%272.6%27%20fill%3D%27%23f4d35e%27%2F%3E%3C%2Fsvg%3E"
+    />
     <link rel="preconnect" href="https://unpkg.com" crossorigin />
     <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
     <!-- tokens.css first: every other stylesheet consumes its custom properties. -->
