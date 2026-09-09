@@ -7,19 +7,32 @@
 
 // Validated categorical/sequential steps from the dataviz palette (references/palette.md):
 // status-critical for incident-style markers, and the blue sequential ramp (light->dark)
-// for continuous magnitude (bike availability). Subway keeps official MTA route colors and
-// the density heatmap keeps deck.gl's warm ramp -- both are already correct, not ad hoc.
+// for continuous magnitude (bike availability). Both re-checked with validate_palette.js:
+// STATUS_CRITICAL is the skill's own documented "critical" status step verbatim (contrast
+// 4.68:1 light / 3.62:1 dark, matching palette.md exactly); the sequential pair is the
+// skill's own step 150/650 verbatim (single hue, monotone lightness -- the categorical
+// six-check validator FAILs it by design, which palette.md says to expect and ignore for
+// a true sequential ramp). The density heatmap keeps deck.gl's own warm ramp -- out of
+// scope for a categorical/status/sequential check, not ad hoc.
 const STATUS_CRITICAL = [208, 59, 59]; // #d03b3b
 const SEQUENTIAL_BLUE_LIGHT = [183, 211, 246]; // step 150, #b7d3f6 -- near-empty
 const SEQUENTIAL_BLUE_DARK = [16, 66, 129]; // step 650, #104281 -- near-full
 const MUTED_INK = [137, 135, 129]; // #898781 -- "no data", never a point on the scale
 
-// Restaurant grades read as status, not an arbitrary new hue: these are the exact
-// --fresh/--stale/--error CSS variables from tokens.css, converted to RGB for deck.gl.
+// Restaurant grades read as status, not an arbitrary new hue: A and C are the exact
+// --fresh/--error CSS variables from tokens.css, converted to RGB for deck.gl.
+// GRADE_B is deliberately NOT --stale's literal #f4a259 -- run through the dataviz
+// skill's validate_palette.js (--pairs all, since any two grades can sit side by side
+// on the map), #f4a259 next to GRADE_A's green fails the CVD-separation floor (worst
+// pair ΔE 5.6 under protanopia, below the 6.0 floor); #d97f24, a darker/more saturated
+// amber on the same hue, clears it (ΔE 8.1 under deuteranopia) while staying far enough
+// from MUTED_INK's gray under normal vision (ΔE 15.1, clears the 15.0 floor). Badge/text
+// uses of --stale elsewhere (tokens.css, chrome.css) are unaffected -- this divergence
+// is local to the restaurant-grade map layer only.
 // Anything that isn't A/B/C (ungraded, pending, null) uses MUTED_INK, same as "no data"
 // elsewhere on this map.
 const GRADE_A = [46, 204, 113]; // --fresh #2ecc71
-const GRADE_B = [244, 162, 89]; // --stale #f4a259
+const GRADE_B = [217, 127, 36]; // #d97f24 -- validated amber, see comment above
 const GRADE_C = [239, 71, 111]; // --error #ef476f
 
 // Hover feedback and update-animation tuning. HOVER_HIGHLIGHT reuses plain white (already
@@ -48,6 +61,22 @@ function lerpColor(from, to, t) {
   ];
 }
 
+// Official MTA route colors, deliberately kept recognizable to riders who already know
+// them -- run through validate_palette.js with --pairs all (any two trains/buses can be
+// neighbors on the map, so all-pairs is the right test, per the skill's own guidance).
+// At 10 distinct hues that is a harder case than the skill's own 8-hue default, which it
+// documents cannot clear all-pairs past 3 slots ("re-ordering or re-stepping cannot make
+// eight colors pairwise-distinct at this floor" -- palette.md); it still fails several
+// all-pairs CVD/normal-vision floors here (e.g. red 1/2/3 vs orange B/D/F/M, ΔE 8.8 normal
+// vision, below the 15 floor). That is a structural cap the skill says to solve by capping
+// series count or faceting, not by re-hexing -- doing the latter here would mean drifting
+// away from the real MTA's own colors, which defeats the point of this palette, so it is
+// left as a known, accepted limit; every marker already carries a hover-tooltip route label
+// and a dark/white stroke halo as the secondary encoding the skill requires for CVD floor-
+// band pairs. L (#a7a9ac) and S (#808183) are real MTA neutrals (shuttle/local designations
+// are officially gray, not a hue) and read as gray under the skill's chroma-floor check for
+// the same reason MUTED_INK does elsewhere on this map -- left alone for the same reason.
+// J/Z's brown was the one near-miss actually worth nudging; see the comment on that line.
 const ROUTE_COLORS = {
   "1": [238, 53, 46], "2": [238, 53, 46], "3": [238, 53, 46],
   "4": [0, 147, 60], "5": [0, 147, 60], "6": [0, 147, 60],
@@ -55,7 +84,11 @@ const ROUTE_COLORS = {
   A: [0, 57, 166], C: [0, 57, 166], E: [0, 57, 166],
   B: [255, 99, 25], D: [255, 99, 25], F: [255, 99, 25], M: [255, 99, 25],
   G: [108, 190, 69],
-  J: [153, 102, 51], Z: [153, 102, 51],
+  // #996633 (real MTA J/Z brown) reads OKLCH C=0.094, just under the dataviz skill's
+  // 0.10 chroma floor -- validate_palette.js flags it as "reads gray". #9c611c holds
+  // the same hue/lightness (H 64.8 vs 63.7, L 0.546 vs 0.554) and clears the floor
+  // (C=0.111); still the same brown at a glance, not a repaint.
+  J: [156, 97, 28], Z: [156, 97, 28],
   L: [167, 169, 172],
   N: [252, 204, 10], Q: [252, 204, 10], R: [252, 204, 10], W: [252, 204, 10],
   S: [128, 129, 131],
