@@ -6,25 +6,29 @@
  * Depends on: utils.js (el, hhmmss), state.js (state), map-layers.js (FEEDS, renderLayers).
  */
 
-// Small color/gradient identifiers matching each layer's map marker (see
-// map-layers.js's ROUTE_COLORS/STATUS_CRITICAL/etc.) and the legend swatches in
-// index.html, so the list can be scanned by color, not just by reading labels.
-// Deliberately a local lookup keyed by feed.key rather than a new field on FEEDS --
-// map-layers.js is owned by another agent right now.
+// Pictogram + accent color for each layer, matching that layer's actual map marker
+// color (see map-layers.js's ROUTE_COLORS/STATUS_CRITICAL/SEQUENTIAL_BLUE_*/GRADE_*)
+// so the list reads as "this is a train/bike/camera/etc." at a glance, not just a
+// color chip. Deliberately a local lookup keyed by feed.key rather than a new field
+// on FEEDS -- map-layers.js is owned by another agent right now.
+//
+// density and citibike are continuous ramps on the map (heatmap warm ramp, blue
+// fill-level ramp) and dohmh_inspections is a categorical A/B/C grade -- there's no
+// single "the" color for any of those, so each picks one representative stop from
+// that same ramp/palette rather than inventing a new hue.
 const LAYER_ICON = {
-  subway_arrivals: { kind: "dot", color: "#f4d35e" },
-  density: { kind: "heat" },
-  nyc_311: { kind: "dot", color: "#d03b3b" },
-  citibike: { kind: "ramp" },
-  dot_cameras: { kind: "dot", color: "#898781" },
-  dohmh_inspections: { kind: "graded" },
+  subway_arrivals: { icon: "subway", color: "#f4d35e" }, // ROUTE_COLORS fallback
+  density: { icon: "density", color: "#f2994a" }, // mid-stop of the heatmap's warm ramp
+  nyc_311: { icon: "nyc_311", color: "#d03b3b" }, // STATUS_CRITICAL
+  citibike: { icon: "citibike", color: "#104281" }, // SEQUENTIAL_BLUE_DARK, near-full
+  dot_cameras: { icon: "dot_cameras", color: "#898781" }, // MUTED_INK
+  dohmh_inspections: { icon: "dohmh_inspections", color: "#2ecc71" }, // GRADE_A
 };
 
 function layerIconHtml(key) {
-  const icon = LAYER_ICON[key];
-  if (!icon) return "";
-  const style = icon.color ? ` style="background:${icon.color}"` : "";
-  return `<span class="layer-icon ${icon.kind}"${style} aria-hidden="true"></span>`;
+  const spec = LAYER_ICON[key];
+  if (!spec) return "";
+  return icon(spec.icon, `layer-marker layer-marker-${key}`);
 }
 
 function buildPanel() {
