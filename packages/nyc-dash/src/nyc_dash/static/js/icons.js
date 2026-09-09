@@ -39,3 +39,69 @@ function icon(key, className) {
   const cls = className ? ` ${className}` : "";
   return `<svg class="icon${cls}" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">${svg}</svg>`;
 }
+
+// ---------------------------------------------------------------------------
+// Map sprite atlas.
+//
+// The same pictograms, packed into one canvas for deck.gl's IconLayer, so a marker on
+// the map is the shape of the thing it represents instead of a coloured dot -- and the
+// shape matches the one already beside that layer's name in the sidebar, so the legend
+// reads as the legend for the map rather than a separate vocabulary.
+//
+// Every cell is rendered as a WHITE glyph and mapped with `mask: true`. That hands the
+// colour back to the layer's own getColor accessor, so per-record colour survives
+// untouched: subway/bus route colours, restaurant grade colours, camera online/offline.
+// Those hues were validated for colourblind separation in an earlier pass; baking colour
+// into the atlas would have thrown that away and made every marker of a layer identical.
+// ---------------------------------------------------------------------------
+
+// Render resolution per glyph: four times the largest on-screen size, so the sprite
+// stays crisp on retina and when zoomed-in markers grow.
+const ICON_ATLAS_CELL = 64;
+
+const ICON_ATLAS_KEYS = Object.keys(ICONS);
+
+function iconGlyphDataUri(key) {
+  // `color` resolves the icons' own `currentColor` to white; see the mask note above.
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" ` +
+    `width="${ICON_ATLAS_CELL}" height="${ICON_ATLAS_CELL}" color="#ffffff">${ICONS[key]}</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function iconAtlasMapping() {
+  const mapping = {};
+  ICON_ATLAS_KEYS.forEach((key, index) => {
+    mapping[key] = {
+      x: index * ICON_ATLAS_CELL,
+      y: 0,
+      width: ICON_ATLAS_CELL,
+      height: ICON_ATLAS_CELL,
+      mask: true,
+    };
+  });
+  return mapping;
+}
+
+/** Resolves to `{url, mapping}` for deck.gl's IconLayer. Never rejects: a glyph that
+ * fails to rasterise is left transparent and the rest of the atlas still ships, because
+ * one bad icon must not take the whole map down to no markers at all. */
+function buildIconAtlas() {
+  const canvas = document.createElement("canvas");
+  canvas.width = ICON_ATLAS_CELL * ICON_ATLAS_KEYS.length;
+  canvas.height = ICON_ATLAS_CELL;
+  const ctx = canvas.getContext("2d");
+  const draws = ICON_ATLAS_KEYS.map(
+    (key, index) =>
+      new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, index * ICON_ATLAS_CELL, 0, ICON_ATLAS_CELL, ICON_ATLAS_CELL);
+          resolve();
+        };
+        img.onerror = () => resolve();
+        img.src = iconGlyphDataUri(key);
+      })
+  );
+  return Promise.all(draws).then(() => ({ url: canvas.toDataURL(), mapping: iconAtlasMapping() }));
+}

@@ -207,11 +207,103 @@ function subwayTrains(records) {
   return entry.trains;
 }
 
+// ---------------------------------------------------------------------------
+// Marker icons.
+//
+// Every point layer draws the pictogram of the thing it represents -- a train for
+// trains, a bus for buses, a camera for cameras -- from the same sprite set the sidebar
+// labels use, so the legend and the map speak one vocabulary instead of two.
+//
+// Colour is unchanged: the atlas is a white mask and each layer's existing
+// getFillColor still decides the hue, so route colours, restaurant grades and
+// camera online/offline all survive, including the colourblind separation they were
+// validated for. Shape is added on top of colour, never instead of it.
+// ---------------------------------------------------------------------------
+
+// Last zoom renderLayersNow saw. markerLayer sizes glyphs from it; renderLayers()
+// already fires on every zoom event, so it is always current by the time it is read.
+let currentZoom = NYC.zoom;
+
+let iconAtlas = null;
+let iconAtlasPending = false;
+
+function ensureIconAtlas() {
+  if (iconAtlas || iconAtlasPending) return;
+  iconAtlasPending = true;
+  buildIconAtlas().then((atlas) => {
+    iconAtlas = atlas;
+    iconAtlasPending = false;
+    renderLayers();
+  });
+}
+
+// Zoom the markers grow with: a pictogram needs more pixels than a dot to read as a
+// shape, but at city-wide zoom thousands of large glyphs would be mush, so they stay
+// small until you are actually looking at a neighbourhood.
+const ICON_MIN_PX = 15;
+const ICON_MAX_PX = 30;
+const ICON_GROWTH_START_ZOOM = 10;
+const ICON_GROWTH_END_ZOOM = 16;
+
+function iconSizeForZoom(zoom) {
+  const span = ICON_GROWTH_END_ZOOM - ICON_GROWTH_START_ZOOM;
+  const t = Math.max(0, Math.min(1, (zoom - ICON_GROWTH_START_ZOOM) / span));
+  return ICON_MIN_PX + t * (ICON_MAX_PX - ICON_MIN_PX);
+}
+
+/** Build a point layer as icons, falling back to the plain dot until the atlas loads.
+ *
+ * Takes a ScatterplotLayer config plus `iconKey` and translates the radius/fill props
+ * to their IconLayer equivalents, so each builder keeps expressing itself in one
+ * vocabulary and the fallback is guaranteed to be the exact layer we shipped before.
+ * `updateTriggers.getFillColor` is renamed with the accessor it guards -- miss that and
+ * the colours silently freeze at whatever they were on first paint.
+ */
+function markerLayer(config) {
+  const { iconKey, ...scatter } = config;
+  if (!iconAtlas) {
+    ensureIconAtlas();
+    return new deck.ScatterplotLayer(scatter);
+  }
+  const {
+    getFillColor,
+    getRadius,
+    radiusUnits,
+    radiusMinPixels,
+    radiusMaxPixels,
+    getLineColor,
+    lineWidthMinPixels,
+    stroked,
+    transitions,
+    updateTriggers,
+    ...shared
+  } = scatter;
+  const renamed = (obj) => {
+    if (!obj || !("getFillColor" in obj)) return obj;
+    const { getFillColor: trigger, ...rest } = obj;
+    return { ...rest, getColor: trigger };
+  };
+  return new deck.IconLayer({
+    ...shared,
+    iconAtlas: iconAtlas.url,
+    iconMapping: iconAtlas.mapping,
+    getIcon: () => iconKey,
+    getColor: getFillColor,
+    // A plain number, not an accessor: deck.gl prop-diffs it, so the markers resize on
+    // zoom without needing an updateTrigger and without re-running per record.
+    getSize: iconSizeForZoom(currentZoom),
+    sizeUnits: "pixels",
+    transitions: renamed(transitions),
+    updateTriggers: renamed(updateTriggers),
+  });
+}
+
 function subwayLayer(envelope) {
   const data = subwayTrains(envelope.records);
   if (!data.length) return null;
-  return new deck.ScatterplotLayer({
+  return markerLayer({
     id: "subway",
+    iconKey: "subway",
     data,
     pickable: true,
     autoHighlight: true,
@@ -253,8 +345,9 @@ function densityLayer(envelope) {
 function layer311(envelope) {
   const data = boroughFiltered(located(envelope.records), "borough");
   if (!data.length) return null;
-  return new deck.ScatterplotLayer({
+  return markerLayer({
     id: "nyc311",
+    iconKey: "nyc_311",
     data,
     pickable: true,
     autoHighlight: true,
@@ -304,8 +397,9 @@ function bikeLayer(envelope, zoom) {
   const data = located(envelope.records);
   if (!data.length) return null;
   const { radiusMinPixels, emptyStationAlpha } = bikeLegibility(zoom);
-  return new deck.ScatterplotLayer({
+  return markerLayer({
     id: "citibike",
+    iconKey: "citibike",
     data,
     pickable: true,
     autoHighlight: true,
@@ -353,8 +447,9 @@ function bikeLayer(envelope, zoom) {
 function cameraLayer(envelope) {
   const data = boroughFiltered(located(envelope.records), "area");
   if (!data.length) return null;
-  return new deck.ScatterplotLayer({
+  return markerLayer({
     id: "cameras",
+    iconKey: "dot_cameras",
     data,
     pickable: true,
     autoHighlight: true,
@@ -401,8 +496,9 @@ function busRadius(routeId) {
 function busLayer(envelope) {
   const data = located(envelope.records);
   if (!data.length) return null;
-  return new deck.ScatterplotLayer({
+  return markerLayer({
     id: "bus",
+    iconKey: "bus",
     data,
     pickable: true,
     autoHighlight: true,
@@ -486,8 +582,9 @@ function subwayShapesLayer(envelope) {
 function inspectionsLayer(envelope) {
   const data = boroughFiltered(located(envelope.records), "boro");
   if (!data.length) return null;
-  return new deck.ScatterplotLayer({
+  return markerLayer({
     id: "dohmh",
+    iconKey: "dohmh_inspections",
     data,
     pickable: true,
     autoHighlight: true,
@@ -580,6 +677,7 @@ function renderLayersNow() {
   // Only bikeLayer reads this second argument (for zoom-aware decluttering); every other
   // builder's signature is (envelope) and simply ignores the extra positional arg.
   const zoom = map ? map.getZoom() : NYC.zoom;
+  currentZoom = zoom;
   const layers = [];
   // Drawn first (deck.gl stacks later array entries on top), so the route network
   // always sits under every marker layer below.
