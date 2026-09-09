@@ -1,7 +1,8 @@
 """Offline tests for the MTA subway adapters.
 
-* Recorded-fixture replays skip (naming the missing file) until the protobuf fixtures in
-  tests/fixtures/transit/ are recorded per RECORD.md; the static GTFS fixture IS recorded.
+* Recorded-fixture replays use the protobuf fixtures checked into tests/fixtures/transit/
+  (recorded 2026-09-08 per RECORD.md); `_fixture_bytes` still skips loudly, naming the
+  missing file, if a fixture is ever deleted without re-recording.
 * Error paths and the shared raw-bytes cache are exercised with inline bodies via respx.
 * `test_trips_parsing_synthetic_feed` builds a FeedMessage in-test to unit-test parsing.
   It is a synthetic parsing test, not an upstream fixture, and is never saved to disk.
@@ -131,6 +132,8 @@ async def test_trips_replays_recorded_fixtures(
     assert all(t.trip_id and t.route_id for t in snap.records)
     assert any(t.direction in ("N", "S") for t in snap.records)
     assert any(t.stop_times for t in snap.records)
+    # a full upcoming stop sequence, not just the next stop, is what dash click-panels need
+    assert any(len(t.stop_times) > 3 for t in snap.records)
     assert any(t.vehicle is not None for t in snap.records)
     assert snap.upstream_generated_at is not None
 

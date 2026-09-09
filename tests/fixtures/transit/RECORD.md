@@ -3,6 +3,9 @@
 Run these on a machine with unrestricted network access, from the repo root. Every
 fixture is a trimmed copy of a real response; never hand-edit or invent entities.
 
+Trip feeds (`nyct-<slug>.pb`) and `subway-alerts.pb` were recorded 2026-09-08 and are
+checked in; re-run the steps below only after an upstream schema change.
+
 Set the same User-Agent the adapters send:
 
 ```bash
@@ -15,9 +18,12 @@ OUT=tests/fixtures/transit
 
 ```bash
 for slug in gtfs gtfs-ace gtfs-bdfm gtfs-g gtfs-jz gtfs-nqrw gtfs-l gtfs-si; do
-  curl -fsS -H "User-Agent: $UA" "$BASE/nyct/$slug" -o "$OUT/nyct-$slug.full.pb"
+  curl -fsS -H "User-Agent: $UA" "$BASE/nyct%2F$slug" -o "$OUT/nyct-$slug.full.pb"
 done
 ```
+
+The `%2F` must be sent verbatim (one URL-encoded path segment); an unescaped `/nyct/$slug`
+gets API Gateway's misleading `403 Missing Authentication Token` instead of the feed.
 
 Trim each to its first 12 entities (keeps a mix of trip_update and vehicle entities for
 the same trips, since NYCT interleaves them). This keeps every byte that survives real:
