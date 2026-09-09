@@ -1,20 +1,24 @@
 """Browser half of the Phase 4 gate: first paint under 2 s on a warm cache.
 
-RUN THIS ON A MACHINE WITH NETWORK ACCESS. It needs two things this sandbox does not
-have:
+RUN THIS ON A MACHINE WITH NETWORK ACCESS. It needs two things some sandboxes lack:
 
-1. the `playwright` Python package (report it to the orchestrator as a dev dependency;
-   `pyproject.toml` is not ours to edit). Chromium is already installed at
-   `/opt/pw-browsers` — do NOT run `playwright install`.
-2. `unpkg.com` (maplibre-gl, deck.gl) and `tiles.openfreemap.org` (basemap tiles), both
-   of which the sandbox egress proxy answers with 403. Without them the page cannot
-   paint a map at all, so the number would be meaningless and is never guessed.
+1. the `playwright` Python package (a `pyproject.toml` dev dependency) plus its
+   Chromium browser (`uv run playwright install chromium`). One known CI sandbox
+   pre-installs Chromium at a fixed `/opt/pw-browsers` instead of the default
+   per-user cache; if that directory exists we point Playwright at it (and skip
+   re-downloading), otherwise Playwright resolves its own default cache location
+   (e.g. `~/Library/Caches/ms-playwright` on macOS) -- don't hardcode one path for
+   every machine this runs on.
+2. `unpkg.com` (maplibre-gl, deck.gl) and `tiles.openfreemap.org` (basemap tiles),
+   reachable outbound. Without them the page cannot paint a map at all, so the
+   number would be meaningless and is never guessed.
 
 Both conditions are checked at runtime and the tests skip with a reason naming what is
 missing. `test_page_degrades_when_the_map_libraries_are_blocked` needs only playwright:
 it blocks the CDN on purpose and asserts our own code still renders honest status pills.
 
-    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers uv run pytest tests/dash/test_first_paint.py -s
+    uv run playwright install chromium   # first time only, if not already present
+    uv run pytest tests/dash/test_first_paint.py -s
 
 The measured number is printed as `first-contentful-paint (warm cache): NNN ms`.
 """
@@ -26,13 +30,16 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
 
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")
+_CI_SANDBOX_BROWSERS = Path("/opt/pw-browsers")
+if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ and _CI_SANDBOX_BROWSERS.is_dir():
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_CI_SANDBOX_BROWSERS)
 
 pytestmark = pytest.mark.slow
 
@@ -49,8 +56,8 @@ def playwright_api() -> object:
     return pytest.importorskip(
         "playwright.sync_api",
         reason=(
-            "playwright is not installed; it is a dev dependency the orchestrator must add "
-            "to pyproject.toml. Chromium is already at /opt/pw-browsers."
+            "playwright is not installed; run `uv sync --group dev` then "
+            "`uv run playwright install chromium`."
         ),
     )
 
