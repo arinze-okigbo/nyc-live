@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     citibike_gbfs_root: str = Field(
         default="https://gbfs.citibikenyc.com/gbfs/gbfs.json", alias="NYC_LIVE_CITIBIKE_GBFS_ROOT"
     )
+    ny511_events_url: str = Field(
+        default="https://511ny.org/api/getevents",
+        alias="NYC_LIVE_NY511_EVENTS_URL",
+        description=(
+            "511NY incidents/closures/roadwork. Answers keyless today and ignores the key "
+            "parameter entirely (an invalid key returns a byte-identical 200), so the "
+            "adapter is deliberately not key-gated; NY511_API_KEY is appended when set."
+        ),
+    )
+    air_quality_base: str = Field(
+        default="https://air-quality-api.open-meteo.com/v1/air-quality",
+        alias="NYC_LIVE_AIR_QUALITY_BASE",
+    )
     socrata_base: str = Field(
         default="https://data.cityofnewyork.us", alias="NYC_LIVE_SOCRATA_BASE"
     )

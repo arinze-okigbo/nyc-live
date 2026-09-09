@@ -60,6 +60,9 @@ class FeedName(StrEnum):
     WEATHER = "weather"
     MTA_BUS = "mta_bus"  # deferred: key-gated (MTA_BUS_TIME_API_KEY)
     NY511_CAMERAS = "ny511_cameras"  # deferred: key-gated (NY511_API_KEY)
+    NY511_EVENTS = "ny511_events"  # incidents/closures/roadwork; answers keyless today
+    MTA_ELEVATOR_OUTAGES = "mta_elevator_outages"  # accessibility equipment, keyless
+    AIR_QUALITY = "air_quality"  # Open-Meteo US AQI, keyless
     DENSITY = "density"  # derived by nyc-vision, served from DuckDB
     WAREHOUSE = "warehouse"  # query_warehouse tool
 
@@ -77,6 +80,9 @@ DEFAULT_TTL: dict[FeedName, timedelta] = {
     FeedName.WEATHER: timedelta(minutes=5),
     FeedName.MTA_BUS: timedelta(seconds=30),
     FeedName.NY511_CAMERAS: timedelta(minutes=10),
+    FeedName.NY511_EVENTS: timedelta(minutes=2),
+    FeedName.MTA_ELEVATOR_OUTAGES: timedelta(minutes=5),
+    FeedName.AIR_QUALITY: timedelta(hours=1),  # upstream publishes hourly; see interval
     FeedName.DENSITY: timedelta(seconds=60),
     FeedName.WAREHOUSE: timedelta(seconds=0),
 }
@@ -576,6 +582,91 @@ class WeatherReport(Located):
     observation: WeatherObservation
     forecast: list[WeatherForecastPeriod] = Field(default_factory=list)
     alerts: list[WeatherAlert] = Field(default_factory=list)
+
+
+class AirQualityReading(Located):
+    """One hourly Open-Meteo air-quality sample for a point.
+
+    Open-Meteo snaps a requested lat/lon to its own model grid, so `lat`/`lon` here
+    are the grid point actually sampled, not the coordinates asked for -- they can be
+    a kilometre or two off. Concentrations are ug/m3; `us_aqi` is the EPA index.
+    """
+
+    observed_at: AwareDatetime
+    us_aqi: int | None = None
+    pm2_5: float | None = None
+    pm10: float | None = None
+    ozone: float | None = None
+    nitrogen_dioxide: float | None = None
+
+
+class NY511Severity(StrEnum):
+    UNKNOWN = "unknown"
+    MINOR = "minor"
+    MODERATE = "moderate"
+    MAJOR = "major"
+
+
+class NY511Event(Located):
+    """A 511NY traffic incident, closure, roadwork item or special event.
+
+    511NY's feed is statewide (~2,400 events); only those inside the NYC bbox are
+    kept. `severity` is normalised to the enum above -- anything unrecognised maps to
+    UNKNOWN rather than failing the whole feed, since one surprising string upstream
+    should not take down a live incident layer. `event_type` / `event_subtype` stay
+    free-form strings: 511NY documents four broad types but adds subtypes freely.
+    """
+
+    id: str
+    event_type: str
+    event_subtype: str | None = None
+    severity: NY511Severity = NY511Severity.UNKNOWN
+    description: str
+    roadway: str | None = None
+    direction: str | None = None
+    county: str | None = None
+    lanes_affected: str | None = None
+    started_at: AwareDatetime | None = None
+    planned_end: AwareDatetime | None = None
+    last_updated: AwareDatetime | None = None
+    points: list[tuple[float, float]] = Field(default_factory=list)
+    """The affected stretch as ordered (lat, lon), decoded from 511NY's encoded polyline.
+
+    Same shape as `SubwayRouteShape.points`. A closure or roadwork item covers a
+    *segment*, not the single point `lat`/`lon` reduces it to, so drawing the segment is
+    the honest rendering. Empty when upstream sends no polyline -- fall back to the point.
+    """
+
+
+class ElevatorEquipmentType(StrEnum):
+    ELEVATOR = "elevator"
+    ESCALATOR = "escalator"
+
+
+class ElevatorOutage(MaybeLocated):
+    """One MTA elevator/escalator currently out, or scheduled to go out.
+
+    MaybeLocated on purpose: this feed carries a station *name* and no coordinates,
+    so lat/lon are filled by joining to MTA_SUBWAY_STOPS where a confident match
+    exists and left None otherwise. Never invent a coordinate to make a marker
+    appear -- an unplaceable outage is still real and must survive in the list.
+
+    `is_upcoming` distinguishes a scheduled future outage from one in effect now;
+    both ship in the same upstream payload, and conflating them would tell a rider
+    an elevator is broken when it is currently working.
+    """
+
+    equipment_id: str
+    equipment_type: ElevatorEquipmentType
+    station: str
+    routes: list[str] = Field(default_factory=list)
+    serving: str | None = None
+    is_ada: bool = False
+    reason: str | None = None
+    outage_started: AwareDatetime | None = None
+    estimated_return: AwareDatetime | None = None
+    is_upcoming: bool = False
+    is_maintenance: bool = False
 
 
 # ---------------------------------------------------------------------------

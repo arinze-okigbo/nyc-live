@@ -159,3 +159,96 @@ EOF
 If the shape_ids referenced by the trimmed `trips.txt` ever change, update the expected
 values in `tests/feeds/test_transit.py::test_shapes_replays_recorded_trimmed_gtfs` to
 match; do not edit the zip by hand.
+
+## 5. Elevator/escalator outages (`nyct_ene.json`) -- ALREADY RECORDED 2026-09-09
+
+Live shape that day: HTTP 200, a JSON array of 136 outage objects, `content-type:
+${header.s3FileType}` (an unsubstituted template on MTA's side -- ignore it). The `%2F`
+is part of the path, same rule as every feed above.
+
+```bash
+curl -fsS -H "User-Agent: $UA" "$BASE/nyct%2Fnyct_ene.json" -o "$OUT/nyct_ene.full.json"
+```
+
+The checked-in `nyct_ene.json` is **11 whole rows of that response, copied verbatim** and
+re-serialised with `json.dumps(indent=2)` for a readable diff -- no key or value is
+edited. They were chosen to cover every branch the adapter has: upcoming vs currently
+out, `EL` vs `ES`, `ADA` `Y` vs `N`, a station that matches one GTFS station uniquely,
+one that only matches inside a station complex, one whose routes contradict the
+name match (`Cortlandt St` on the 1), and one whose name matches two stations 1.9 km
+apart (`Gun Hill Rd`).
+
+```bash
+uv run python - <<'EOF'
+import json
+from pathlib import Path
+out = Path("tests/fixtures/transit")
+full = json.loads((out / "nyct_ene.full.json").read_text())
+KEEP = {"EL224","EL229","EL230","EL712","ES105","EL289X","ES607X","EL445X","ES461X","EL14X","EL290X"}
+kept = [r for r in full if r["equipment"] in KEEP]
+(out / "nyct_ene.json").write_text(json.dumps(kept, indent=2) + "\n")
+(out / "nyct_ene.full.json").unlink()
+print(len(kept), "of", len(full), "rows")
+EOF
+```
+
+Equipment ids are reused across scheduled windows, so `KEEP` may match more or fewer
+rows after an upstream change; update the expected values in
+`tests/feeds/test_accessibility.py` to the new real rows rather than editing the JSON.
+
+### `nyct_ene_nosuchkey.xml` -- the 200-that-means-404
+
+A wrong key on this endpoint does **not** 404: API Gateway proxies S3 and returns HTTP
+200 with an XML error body. That is why `parse_outages` sniffs the body. Recorded from a
+deliberately bogus key:
+
+```bash
+curl -fsS -H "User-Agent: $UA" "$BASE/nyct%2Fnyct_ene_does_not_exist.json" \
+  -o "$OUT/nyct_ene_nosuchkey.xml"
+```
+
+### `gtfs_subway_ene_stops.zip` -- stops for the outage join
+
+Same trimming recipe as section 3 (real `stops.txt` / `trips.txt` / `stop_times.txt`
+rows, one real trip per route/stop pair) but for the parent stations the outage fixture
+names, **including the two that must not be matched**: `R25` (the only GTFS "Cortlandt
+St", N/R/W) and `208`/`503` (two distinct "Gun Hill Rd" stations 1,910 m apart). Kept
+separate from `gtfs_subway_trimmed.zip` so the two test suites cannot break each other.
+
+```bash
+curl -fsS -H "User-Agent: $UA" https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip -o /tmp/gtfs_subway.zip
+uv run python - <<'EOF'
+import csv, io, zipfile
+SRC, DST = "/tmp/gtfs_subway.zip", "tests/fixtures/transit/gtfs_subway_ene_stops.zip"
+PARENTS = ["127", "725", "R16", "A27", "G22", "719", "L01", "208", "503", "R25"]
+src = zipfile.ZipFile(SRC)
+def rows(name):
+    with src.open(name) as f:
+        r = csv.reader(io.TextIOWrapper(f, encoding="utf-8-sig", newline="")); return next(r), list(r)
+s_hdr, s_rows = rows("stops.txt")
+keep_stops = [r for r in s_rows if r[0] in PARENTS or r[s_hdr.index("parent_station")] in PARENTS]
+keep_ids = {r[0] for r in keep_stops}
+t_hdr, t_rows = rows("trips.txt")
+trip_route = {r[t_hdr.index("trip_id")]: r[t_hdr.index("route_id")] for r in t_rows}
+st_hdr, st_rows = rows("stop_times.txt")
+ti, si = st_hdr.index("trip_id"), st_hdr.index("stop_id")
+touching = [r for r in st_rows if r[si] in keep_ids]
+chosen, seen = set(), set()
+for r in touching:
+    pair = (trip_route[r[ti]], r[si])
+    if pair not in seen: seen.add(pair); chosen.add(r[ti])
+keep_st = [r for r in touching if r[ti] in chosen]
+keep_trips = [r for r in t_rows if r[t_hdr.index("trip_id")] in chosen]
+def csv_bytes(hdr, rs):
+    buf = io.StringIO(); w = csv.writer(buf, lineterminator="\n"); w.writerow(hdr); w.writerows(rs)
+    return buf.getvalue().encode()
+with zipfile.ZipFile(DST, "w", zipfile.ZIP_DEFLATED) as out:
+    out.writestr("feed_info.txt", src.read("feed_info.txt")); out.writestr("agency.txt", src.read("agency.txt"))
+    out.writestr("stops.txt", csv_bytes(s_hdr, keep_stops)); out.writestr("trips.txt", csv_bytes(t_hdr, keep_trips))
+    out.writestr("stop_times.txt", csv_bytes(st_hdr, keep_st))
+print(len(keep_stops), "stops", len(keep_trips), "trips", len(keep_st), "stop_times")
+EOF
+```
+
+If a station moves or is renamed upstream, update the expected coordinates in
+`tests/feeds/test_accessibility.py` to the new real rows; do not edit the zip by hand.

@@ -65,6 +65,16 @@ ADAPTER_SPECS: tuple[AdapterSpec, ...] = (
         "nyc_live.feeds.civic", "InspectionsAdapter", FeedName.DOHMH_INSPECTIONS, "feed-civic"
     ),
     AdapterSpec("nyc_live.feeds.civic", "WeatherAdapter", FeedName.WEATHER, "feed-civic"),
+    AdapterSpec("nyc_live.feeds.air", "AirQualityAdapter", FeedName.AIR_QUALITY, "feed-civic"),
+    AdapterSpec(
+        "nyc_live.feeds.ny511", "NY511EventsAdapter", FeedName.NY511_EVENTS, "feed-cameras"
+    ),
+    AdapterSpec(
+        "nyc_live.feeds.accessibility",
+        "ElevatorOutagesAdapter",
+        FeedName.MTA_ELEVATOR_OUTAGES,
+        "feed-transit",
+    ),
 )
 
 FRAME_SOURCE_SPEC = ("nyc_live.feeds.cameras", "CameraFrameSource")

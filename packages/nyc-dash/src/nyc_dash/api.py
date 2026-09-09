@@ -375,6 +375,52 @@ ROUTES: tuple[FeedRoute, ...] = (
             'status="error", kind="not_configured".'
         ),
     ),
+    FeedRoute(
+        key="ny511_events",
+        feed=FeedName.NY511_EVENTS,
+        label="511NY incidents",
+        handler=_plain(FeedName.NY511_EVENTS),
+        default_limit=1000,
+        aliases=("incidents",),
+        description=(
+            "511NY incidents, closures, roadwork and special events "
+            "(Envelope[NY511Event]); 2 minute TTL. Not key-gated: the endpoint ignores "
+            "the key parameter entirely, so gating would switch off a working layer. "
+            "`points` carries the affected stretch when upstream publishes a polyline; "
+            "NYC's publisher (TRANSCOM) currently sends none, so consumers must fall "
+            "back to the point."
+        ),
+    ),
+    FeedRoute(
+        key="mta_elevator_outages",
+        feed=FeedName.MTA_ELEVATOR_OUTAGES,
+        label="Elevator outages",
+        handler=_plain(FeedName.MTA_ELEVATOR_OUTAGES),
+        default_limit=500,
+        aliases=("elevators", "ada"),
+        description=(
+            "MTA elevator/escalator outages (Envelope[ElevatorOutage]); 5 minute TTL, "
+            "keyless. Includes both currently-out and scheduled-future outages -- read "
+            "`is_upcoming` before telling a rider something is broken. Coordinates come "
+            "from a station-name join to mta_subway_stops and are None where no "
+            "confident match exists (~2% of rows), never guessed."
+        ),
+    ),
+    FeedRoute(
+        key="air_quality",
+        feed=FeedName.AIR_QUALITY,
+        label="Air quality",
+        handler=_plain(FeedName.AIR_QUALITY),
+        default_radius_m=50_000,
+        description=(
+            "Open-Meteo US AQI and pollutants (Envelope[AirQualityReading]); 1 hour TTL, "
+            "keyless. One reading per distinct Open-Meteo grid cell across the five "
+            "boroughs -- lat/lon is the grid point actually sampled, which can sit a "
+            "kilometre or two from the borough anchor requested. No default_limit: the "
+            "feed returns a handful of records and truncating would silently drop a "
+            "borough."
+        ),
+    ),
 )
 
 ROUTE_BY_KEY: dict[str, FeedRoute] = {}

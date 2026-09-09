@@ -1,0 +1,141 @@
+[
+    {
+        "latitude": 40.800003,
+        "longitude": -74.0,
+        "generationtime_ms": 0.3476142883300781,
+        "utc_offset_seconds": 0,
+        "timezone": "GMT",
+        "timezone_abbreviation": "GMT",
+        "elevation": 44.0,
+        "current_units": {
+            "time": "iso8601",
+            "interval": "seconds",
+            "us_aqi": "USAQI",
+            "pm2_5": "\u03bcg/m\u00b3",
+            "pm10": "\u03bcg/m\u00b3",
+            "ozone": "\u03bcg/m\u00b3",
+            "nitrogen_dioxide": "\u03bcg/m\u00b3"
+        },
+        "current": {
+            "time": "2026-09-09T20:00",
+            "interval": 3600,
+            "us_aqi": 70,
+            "pm2_5": 14.1,
+            "pm10": 15.8,
+            "ozone": 143.0,
+            "nitrogen_dioxide": 8.8
+        }
+    },
+    {
+        "latitude": 40.800003,
+        "longitude": -73.9,
+        "generationtime_ms": 0.164031982421875,
+        "utc_offset_seconds": 0,
+        "timezone": "GMT",
+        "timezone_abbreviation": "GMT",
+        "elevation": 15.0,
+        "location_id": 1,
+        "current_units": {
+            "time": "iso8601",
+            "interval": "seconds",
+            "us_aqi": "USAQI",
+            "pm2_5": "\u03bcg/m\u00b3",
+            "pm10": "\u03bcg/m\u00b3",
+            "ozone": "\u03bcg/m\u00b3",
+            "nitrogen_dioxide": "\u03bcg/m\u00b3"
+        },
+        "current": {
+            "time": "2026-09-09T20:00",
+            "interval": 3600,
+            "us_aqi": 70,
+            "pm2_5": 14.1,
+            "pm10": 15.8,
+            "ozone": 143.0,
+            "nitrogen_dioxide": 8.8
+        }
+    },
+    {
+        "latitude": 40.699997,
+        "longitude": -73.9,
+        "generationtime_ms": 0.1842975616455078,
+        "utc_offset_seconds": 0,
+        "timezone": "GMT",
+        "timezone_abbreviation": "GMT",
+        "elevation": 23.0,
+        "location_id": 2,
+        "current_units": {
+            "time": "iso8601",
+            "interval": "seconds",
+            "us_aqi": "USAQI",
+            "pm2_5": "\u03bcg/m\u00b3",
+            "pm10": "\u03bcg/m\u00b3",
+            "ozone": "\u03bcg/m\u00b3",
+            "nitrogen_dioxide": "\u03bcg/m\u00b3"
+        },
+        "current": {
+            "time": "2026-09-09T20:00",
+            "interval": 3600,
+            "us_aqi": 70,
+            "pm2_5": 14.1,
+            "pm10": 15.8,
+            "ozone": 143.0,
+            "nitrogen_dioxide": 8.8
+        }
+    },
+    {
+        "latitude": 40.699997,
+        "longitude": -73.799995,
+        "generationtime_ms": 0.17309188842773438,
+        "utc_offset_seconds": 0,
+        "timezone": "GMT",
+        "timezone_abbreviation": "GMT",
+        "elevation": 21.0,
+        "location_id": 3,
+        "current_units": {
+            "time": "iso8601",
+            "interval": "seconds",
+            "us_aqi": "USAQI",
+            "pm2_5": "\u03bcg/m\u00b3",
+            "pm10": "\u03bcg/m\u00b3",
+            "ozone": "\u03bcg/m\u00b3",
+            "nitrogen_dioxide": "\u03bcg/m\u00b3"
+        },
+        "current": {
+            "time": "2026-09-09T20:00",
+            "interval": 3600,
+            "us_aqi": 67,
+            "pm2_5": 15.5,
+            "pm10": 18.7,
+            "ozone": 138.0,
+            "nitrogen_dioxide": 9.1
+        }
+    },
+    {
+        "latitude": 40.600006,
+        "longitude": -74.2,
+        "generationtime_ms": 0.1894235610961914,
+        "utc_offset_seconds": 0,
+        "timezone": "GMT",
+        "timezone_abbreviation": "GMT",
+        "elevation": 41.0,
+        "location_id": 4,
+        "current_units": {
+            "time": "iso8601",
+            "interval": "seconds",
+            "us_aqi": "USAQI",
+            "pm2_5": "\u03bcg/m\u00b3",
+            "pm10": "\u03bcg/m\u00b3",
+            "ozone": "\u03bcg/m\u00b3",
+            "nitrogen_dioxide": "\u03bcg/m\u00b3"
+        },
+        "current": {
+            "time": "2026-09-09T20:00",
+            "interval": 3600,
+            "us_aqi": 56,
+            "pm2_5": 11.7,
+            "pm10": 13.4,
+            "ozone": 119.0,
+            "nitrogen_dioxide": 12.0
+        }
+    }
+]
