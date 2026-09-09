@@ -250,10 +250,53 @@ def test_weather_badge_surfaces_the_forecast_via_a_click_popover() -> None:
     assert "function ensureWeatherPopover()" in APP_JS
     assert "weather-forecast-popover" in APP_JS
     assert "weather-forecast-popover" in STYLE
-    # no affordance at all once a real forecast is absent -- never opens on nothing.
-    assert "if (!weatherForecastPeriods.length) return;" in APP_JS
-    assert 'badge.classList.toggle("has-forecast", weatherForecastPeriods.length > 0);' in APP_JS
+    # no affordance at all once there is neither a real forecast nor an active alert --
+    # never opens on nothing. weatherPopoverHasContent() covers both (see the alerts
+    # test below), superseding the forecast-only gate this popover started with.
+    assert "function weatherPopoverHasContent()" in APP_JS
+    assert "return weatherForecastPeriods.length > 0 || weatherAlertEntries.length > 0;" in APP_JS
+    assert "if (!weatherPopoverHasContent()) return;" in APP_JS
+    assert 'badge.classList.toggle("has-forecast", hasContent);' in APP_JS
     assert ".badge.has-forecast" in STYLE
+
+
+def test_weather_alerts_surface_urgency_on_the_badge_and_in_the_popover() -> None:
+    """`WeatherReport.alerts` (contracts.py, real NWS alerts.weather.gov data) is safety
+    information, unlike the forecast, so it must (1) change the badge's own appearance
+    via a `data-alert-severity` attribute keyed to this app's existing --error/--stale
+    status color tokens rather than a fabricated new color, with the worst severities
+    (Extreme/Severe) pulsing since those are the ones worth interrupting a glance for,
+    (2) aggregate across every station in the envelope, not just the one driving the
+    badge's temperature text (a JFK-only alert must not be invisible behind Central
+    Park's clear skies), and (3) list in the popover with event/severity/headline/area,
+    in their own section distinct from the routine forecast list."""
+    # severity -> badge attribute, ranked worst-first, aggregated across all records.
+    assert "const ALERT_SEVERITY_RANK = " in APP_JS
+    assert "function collectWeatherAlerts(records)" in APP_JS
+    assert "function applyWeatherAlertSeverity(records)" in APP_JS
+    assert "badge.dataset.alertSeverity = entries[0].alert.severity.toLowerCase();" in APP_JS
+    assert "applyWeatherAlertSeverity(envelope.records);" in APP_JS
+    # an empty alerts list (the normal case) must not add a placeholder anywhere.
+    assert "delete badge.dataset.alertSeverity;" in APP_JS
+    # alerts are collected from the whole envelope, not report (== records[0]) alone.
+    assert "renderWeatherAlerts(envelope.records);" in APP_JS
+    # popover content: its own section, above the forecast, with event/severity/
+    # headline/area, distinct markup from the plain forecast period list.
+    assert "function weatherAlertHtml(entry)" in APP_JS
+    assert 'class="weather-alert-list"' in APP_JS
+    assert "alert.area_desc" in APP_JS
+    assert "const alertsHtml = weatherAlertEntries.length" in APP_JS
+    assert "weatherPopoverEl.innerHTML = alertsHtml + forecastHtml;" in APP_JS
+    # CSS: severity keys off this app's existing --error/--stale tokens (tokens.css),
+    # not a new color, and only the worst severities pulse.
+    assert '.badge[data-alert-severity="extreme"]' in STYLE
+    assert '.badge[data-alert-severity="severe"]' in STYLE
+    assert "color: var(--error);" in STYLE
+    assert "animation: weather-alert-pulse" in STYLE
+    assert '.badge[data-alert-severity="moderate"]' in STYLE
+    assert '.badge[data-alert-severity="minor"]' in STYLE
+    assert "color: var(--stale);" in STYLE
+    assert ".weather-alert-list" in STYLE
 
 
 def test_search_box_markup_exists_above_the_borough_section() -> None:
@@ -416,6 +459,33 @@ def test_detail_panel_has_a_focus_trap_and_restores_focus_on_close() -> None:
     assert "let panelFocusFallback = null;" in detail_js
     search_js = (STATIC_DIR / "js" / "search.js").read_text()
     assert "panelFocusFallback = el(" in search_js
+
+
+def test_map_view_is_deep_linkable_via_the_url_hash() -> None:
+    """Panning/zooming the map must update the URL hash (format `#zoom/lat/lon`, e.g.
+    "#12.40/40.73570/-73.99110") via history.replaceState -- never pushState, which
+    would spam the back-button history on every pan/zoom -- debounced past MapLibre's
+    "moveend" (already once-per-gesture, not once-per-frame like "move"). On load, a
+    present and valid hash must initialize the map there instead of the default NYC
+    view; an absent or malformed hash must fall back to NYC rather than crash."""
+    assert "function parseHashView()" in APP_JS
+    assert "function writeHashView()" in APP_JS
+    assert "function scheduleHashUpdate()" in APP_JS
+    assert 'map.on("moveend", scheduleHashUpdate);' in APP_JS
+    assert 'history.replaceState(null, "", hash);' in APP_JS
+    assert "history.pushState(" not in APP_JS
+    assert "clearTimeout(hashUpdateTimer);" in APP_JS
+    assert "setTimeout(writeHashView, HASH_UPDATE_DEBOUNCE_MS);" in APP_JS
+    # sane range validation of the parsed hash, not blind trust of an arbitrary URL
+    assert "zoom >= 0 && zoom <= 22" in APP_JS
+    assert "lat >= -90 && lat <= 90" in APP_JS
+    assert "lon >= -180 && lon <= 180" in APP_JS
+    # falls back to the default NYC view (not a crash) when the hash is absent/malformed
+    assert (
+        "center: initialView ? [initialView.lon, initialView.lat] : [NYC.longitude, NYC.latitude],"
+        in APP_JS
+    )
+    assert "zoom: initialView ? initialView.zoom : NYC.zoom," in APP_JS
 
 
 def test_assets_are_served_with_the_right_content_types(client: TestClient) -> None:
