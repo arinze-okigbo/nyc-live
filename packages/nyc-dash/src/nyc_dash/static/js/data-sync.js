@@ -12,14 +12,22 @@
  *   - one feed failing changes nothing about any other layer.
  *
  * Depends on: utils.js (el, setConnection), state.js (state), map-layers.js
- * (FEEDS, STREAM_KEYS, WEATHER_KEY, renderLayers), status-panel.js (setPill, applyHealth,
- * applyWeather).
+ * (FEEDS, STREAM_KEYS, WEATHER_KEY, SUBWAY_SHAPES_KEY, renderLayers), status-panel.js
+ * (setPill, applyHealth, applyWeather).
  */
 
 function applyEnvelope(key, envelope) {
   if (key === WEATHER_KEY) {
     applyWeather(envelope);
     el("updated").textContent = `updated ${new Date().toLocaleTimeString()}`;
+    return;
+  }
+  // Static route-shape backdrop: not a FEEDS entry (no pill, no toggle -- see
+  // subwayShapesLayer in map-layers.js), so it gets the same "store the envelope,
+  // re-render" treatment as weather above instead of the FEEDS/state.get() path below.
+  if (key === SUBWAY_SHAPES_KEY) {
+    subwayShapesEnvelope = envelope;
+    renderLayers();
     return;
   }
   const entry = state.get(key);
@@ -32,7 +40,12 @@ function applyEnvelope(key, envelope) {
 
 function feedUrl(key) {
   const feed = FEEDS.find((f) => f.key === key);
-  return feed && feed.query ? `/api/${key}?${feed.query}` : `/api/${key}?limit=10`;
+  if (feed && feed.query) return `/api/${key}?${feed.query}`;
+  // mta_subway_shapes has a 24h TTL and no per-client reason to page it; fetch the
+  // full static set once rather than truncating it the way the generic fallback
+  // below (limit=10) would.
+  if (key === SUBWAY_SHAPES_KEY) return `/api/${key}`;
+  return `/api/${key}?limit=10`;
 }
 
 async function fetchFeed(key) {

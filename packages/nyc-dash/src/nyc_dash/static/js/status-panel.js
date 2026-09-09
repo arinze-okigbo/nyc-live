@@ -23,6 +23,7 @@ const LAYER_ICON = {
   citibike: { icon: "citibike", color: "#104281" }, // SEQUENTIAL_BLUE_DARK, near-full
   dot_cameras: { icon: "dot_cameras", color: "#898781" }, // MUTED_INK
   dohmh_inspections: { icon: "dohmh_inspections", color: "#2ecc71" }, // GRADE_A
+  mta_bus: { icon: "bus", color: "#f4d35e" }, // ROUTE_COLORS fallback, same as subway_arrivals
 };
 
 function layerIconHtml(key) {

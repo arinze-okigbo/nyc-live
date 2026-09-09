@@ -55,6 +55,10 @@ function start() {
   });
   setConnection("connecting", "connecting…");
   refreshAll().then(connectStream);
+  // One-shot: static GTFS route shapes (24h TTL) don't belong in the polling/SSE
+  // cycle above (see SUBWAY_SHAPES_KEY in map-layers.js) -- fetch them once via the
+  // same fetchFeed/applyEnvelope machinery and let them sit as a map backdrop.
+  fetchFeed(SUBWAY_SHAPES_KEY);
 }
 
 if (document.readyState === "loading") {

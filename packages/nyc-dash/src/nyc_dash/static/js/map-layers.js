@@ -65,6 +65,16 @@ function located(records) {
   return records.filter((r) => r.lat != null && r.lon != null);
 }
 
+// Bus route ids from MTA Bus Time (BusVehicle.route_id) are agency-qualified, e.g.
+// "MTA NYCT_Q30" -- strip the agency prefix for the short route code that's actually
+// painted on the bus and shown to riders. Used for the marker color lookup below,
+// the hover tooltip, and the detail panel title.
+function busRouteLabel(routeId) {
+  if (!routeId) return "?";
+  const idx = routeId.indexOf("_");
+  return idx === -1 ? routeId : routeId.slice(idx + 1);
+}
+
 function subwayLayer(envelope) {
   // One dot per train, at the stop it is next due at (coordinates come from the
   // static stops feed). Nothing is interpolated between stations.
@@ -225,6 +235,53 @@ function cameraLayer(envelope) {
   });
 }
 
+function busLayer(envelope) {
+  const data = located(envelope.records);
+  if (!data.length) return null;
+  return new deck.ScatterplotLayer({
+    id: "bus",
+    data,
+    pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
+    radiusUnits: "meters",
+    getPosition: (d) => [d.lon, d.lat],
+    getRadius: 45,
+    radiusMinPixels: 2,
+    radiusMaxPixels: 8,
+    // Same categorical-jump reasoning as subwayLayer above (a bus's route is a jump,
+    // not something that eases): ROUTE_COLORS is keyed by subway line, so most bus
+    // route codes fall through to the same neutral fallback subwayLayer uses for an
+    // unrecognized route -- reusing that palette, not inventing a bus-specific one.
+    getFillColor: (d) => [...(ROUTE_COLORS[busRouteLabel(d.route_id)] || [244, 211, 94]), 210],
+    getLineColor: [10, 12, 16],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    updateTriggers: { getFillColor: envelope.fetched_at },
+  });
+}
+
+// Static GTFS route polylines (SubwayRouteShape), drawn as a faint, always-on backdrop
+// under the train dots -- not one of the toggleable FEEDS entries below, since a 24h-TTL
+// static reference layer isn't really a "live feed" a user would switch on and off, and
+// pushing hundreds of routes at full opacity would read as spaghetti rather than context.
+// Low alpha keeps this legible as "the physical track" without competing with the
+// (pickable, brighter) marker layers drawn on top of it.
+function subwayShapesLayer(envelope) {
+  if (!envelope || envelope.status === "error") return null;
+  const data = envelope.records;
+  if (!data.length) return null;
+  return new deck.PathLayer({
+    id: "subway_shapes",
+    data,
+    pickable: false,
+    widthUnits: "pixels",
+    getWidth: 1.4,
+    getPath: (d) => d.points.map(([lat, lon]) => [lon, lat]),
+    getColor: (d) => [...(ROUTE_COLORS[d.route_id] || [244, 211, 94]), 80],
+  });
+}
+
 function inspectionsLayer(envelope) {
   const data = located(envelope.records);
   if (!data.length) return null;
@@ -298,9 +355,23 @@ const FEEDS = [
     build: inspectionsLayer,
     count: (env) => `${env.records.length} inspections`,
   },
+  {
+    key: "mta_bus",
+    label: "Buses",
+    query: "limit=3000", // covers today's live fleet (~2400 vehicles) with headroom
+    defaultVisible: false, // dense data; opt-in like DOT cameras
+    build: busLayer,
+    count: (env) => `${env.records.length} buses`,
+  },
 ];
 
 const WEATHER_KEY = "weather";
+// Static GTFS route shapes (24h TTL): fetched once at boot via the same
+// fetchFeed/applyEnvelope machinery every other feed uses (see data-sync.js), but kept
+// out of FEEDS/STREAM_KEYS -- it is a background map decoration, not a layer the user
+// toggles or a value that needs re-polling every REFRESH_S while unchanged for a day.
+const SUBWAY_SHAPES_KEY = "mta_subway_shapes";
+let subwayShapesEnvelope = null;
 const STREAM_KEYS = FEEDS.map((f) => f.key).concat([WEATHER_KEY]);
 
 function renderLayersNow() {
@@ -309,6 +380,10 @@ function renderLayersNow() {
   // builder's signature is (envelope) and simply ignores the extra positional arg.
   const zoom = map ? map.getZoom() : NYC.zoom;
   const layers = [];
+  // Drawn first (deck.gl stacks later array entries on top), so the route network
+  // always sits under every marker layer below.
+  const shapes = subwayShapesLayer(subwayShapesEnvelope);
+  if (shapes) layers.push(shapes);
   for (const feed of FEEDS) {
     const entry = state.get(feed.key);
     // status === "error" means there is no usable data: the layer is not drawn.
@@ -377,6 +452,14 @@ function tooltip({ object, layer }) {
       html: `<b>${escapeHtml(object.dba || "unnamed")}</b><br/>grade ${escapeHtml(
         object.grade || "ungraded"
       )} · click for details`,
+    };
+  }
+  if (layer.id === "bus") {
+    const nextStop = object.next_stop_name
+      ? ` → ${escapeHtml(object.next_stop_name)}`
+      : "";
+    return {
+      html: `<b>${escapeHtml(busRouteLabel(object.route_id))} bus</b>${nextStop}<br/>click for details`,
     };
   }
   return null;

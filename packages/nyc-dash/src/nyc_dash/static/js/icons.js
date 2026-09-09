@@ -26,6 +26,8 @@ const ICONS = {
 
   dohmh_inspections: `<path d="M4 2.5v5.2a1.6 1.6 0 0 0 3.2 0V2.5M5.6 2.5v3.8M4 2.5v0" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><path d="M11 2.5c-1 0-1.6.9-1.6 2.4S10 7.4 11 7.4v6.1" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.6 8.2v5.3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>`,
 
+  bus: `<rect x="2" y="3.5" width="12" height="7.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M2 6.7h12M5.2 3.5v3.2M10.8 3.5v3.2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/><circle cx="4.8" cy="12.2" r="1.1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="11.2" cy="12.2" r="1.1" fill="none" stroke="currentColor" stroke-width="1"/>`,
+
   alert: `<path d="M8 2.2 14.3 13a.9.9 0 0 1-.8 1.4H2.5a.9.9 0 0 1-.8-1.4L8 2.2Z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M8 6.4v3M8 11.6h.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>`,
 
   chart: `<path d="M2.5 13.5h11M4 13V9.5M7.3 13V6M10.6 13V8M13.9 13V4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`,

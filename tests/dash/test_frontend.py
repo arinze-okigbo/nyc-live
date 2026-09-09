@@ -88,9 +88,37 @@ def test_every_layer_in_app_js_maps_to_a_real_endpoint() -> None:
     assert 'const WEATHER_KEY = "weather";' in APP_JS
 
 
+def test_bus_layer_is_registered_as_a_feed() -> None:
+    """mta_bus is a real, key-gated, live endpoint (ROUTE_BY_KEY) -- it must appear in
+    FEEDS like every other map layer, not be fetched through a bespoke path."""
+    keys = re.findall(r'^\s{4}key: "([a-z0-9_]+)",$', APP_JS, flags=re.MULTILINE)
+    assert "mta_bus" in keys
+    assert "mta_bus" in ROUTE_BY_KEY
+    assert "busLayer" in APP_JS
+    assert "busDetail" in APP_JS
+    assert "bus: busDetail," in APP_JS
+
+
+def test_bus_icon_exists() -> None:
+    assert "bus:" in (STATIC_DIR / "js" / "icons.js").read_text()
+    assert "mta_bus:" in (STATIC_DIR / "js" / "status-panel.js").read_text()
+
+
+def test_subway_shapes_are_fetched_and_drawn_as_a_backdrop() -> None:
+    """mta_subway_shapes is fetched once through the generic fetchFeed/applyEnvelope
+    machinery (not a bespoke fetch call) and rendered with a PathLayer, but is not one
+    of the toggleable FEEDS entries -- it's a static 24h-TTL background layer."""
+    assert "deck.PathLayer" in APP_JS
+    assert "fetchFeed(SUBWAY_SHAPES_KEY)" in APP_JS
+    keys = re.findall(r'^\s{4}key: "([a-z0-9_]+)",$', APP_JS, flags=re.MULTILINE)
+    assert "mta_subway_shapes" not in keys
+    assert "mta_subway_shapes" in ROUTE_BY_KEY
+
+
 def test_deck_layers_cover_the_brief() -> None:
-    assert "deck.ScatterplotLayer" in APP_JS  # subway, 311, Citi Bike, cameras
+    assert "deck.ScatterplotLayer" in APP_JS  # subway, 311, Citi Bike, cameras, buses
     assert "deck.HeatmapLayer" in APP_JS  # camera density
+    assert "deck.PathLayer" in APP_JS  # subway route shapes backdrop
     assert "deck.MapboxOverlay" in APP_JS
     assert "new maplibregl.Map" in APP_JS
 

@@ -6,7 +6,7 @@
  * a cleanup function (clearing a setInterval, cancelling a fetch) which runs when the
  * panel is closed or replaced.
  *
- * Depends on: utils.js (el, escapeHtml, hhmmss).
+ * Depends on: utils.js (el, escapeHtml, hhmmss), map-layers.js (busRouteLabel).
  */
 
 // Kept in sync with the CSS transition-duration on .detail-panel below (detail-panel.css).
@@ -468,12 +468,36 @@ function subwayDetail(record) {
   );
 }
 
+// Only the fields BusVehicle actually reports get a row: the SIRI MonitoredCall /
+// Occupancy fields on the contract are optional and absent on vehicles that aren't
+// currently monitored (see the contract's own docstring) -- that's expected, not a
+// bug, so a missing next-stop or occupancy value is omitted rather than shown as "—".
+function busDetail(record) {
+  const routeLabel = escapeHtml(busRouteLabel(record.route_id));
+  const fields = [["Route", record.route_id ? routeLabel : "—"]];
+  if (record.next_stop_name) {
+    const eta = record.next_stop_eta ? ` · ${hhmmss(record.next_stop_eta)}` : "";
+    fields.push(["Next stop", `${escapeHtml(record.next_stop_name)}${eta}`]);
+  }
+  if (record.stops_away != null) fields.push(["Stops away", record.stops_away]);
+  if (record.occupancy) fields.push(["Occupancy", escapeHtml(record.occupancy)]);
+  if (record.bearing != null) fields.push(["Bearing", `${Math.round(record.bearing)}°`]);
+  openDetailPanel(
+    record.route_id ? `${routeLabel} bus` : "Bus",
+    (body) => {
+      body.innerHTML = fieldsHtml(fields);
+    },
+    "bus"
+  );
+}
+
 const DETAIL_BUILDERS = {
   subway: subwayDetail,
   nyc311: service311Detail,
   citibike: bikeDetail,
   cameras: cameraDetail,
   dohmh: inspectionDetail,
+  bus: busDetail,
 };
 
 function handleMapClick(info) {
