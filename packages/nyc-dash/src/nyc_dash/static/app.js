@@ -21,6 +21,24 @@ const REFRESH_S = 15;
 const NYC = { longitude: -73.9855, latitude: 40.7484, zoom: 11.2, pitch: 0, bearing: 0 };
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
+// Validated categorical/sequential steps from the dataviz palette (references/palette.md):
+// status-critical for incident-style markers, and the blue sequential ramp (light->dark)
+// for continuous magnitude (bike availability). Subway keeps official MTA route colors and
+// the density heatmap keeps deck.gl's warm ramp -- both are already correct, not ad hoc.
+const STATUS_CRITICAL = [208, 59, 59]; // #d03b3b
+const SEQUENTIAL_BLUE_LIGHT = [183, 211, 246]; // step 150, #b7d3f6 -- near-empty
+const SEQUENTIAL_BLUE_DARK = [16, 66, 129]; // step 650, #104281 -- near-full
+const MUTED_INK = [137, 135, 129]; // #898781 -- "no data", never a point on the scale
+
+function lerpColor(from, to, t) {
+  const c = Math.max(0, Math.min(1, t));
+  return [
+    Math.round(from[0] + (to[0] - from[0]) * c),
+    Math.round(from[1] + (to[1] - from[1]) * c),
+    Math.round(from[2] + (to[2] - from[2]) * c),
+  ];
+}
+
 const ROUTE_COLORS = {
   "1": [238, 53, 46], "2": [238, 53, 46], "3": [238, 53, 46],
   "4": [0, 147, 60], "5": [0, 147, 60], "6": [0, 147, 60],
@@ -133,6 +151,20 @@ function buildPanel() {
   }
 }
 
+// Plain-language summary for the ErrorKinds whose raw message tends to carry upstream
+// jargon (dataset ids, SQL-shaped filters, raw HTTP bodies) -- the raw message moves to
+// the element's title instead (still "surfaced in the UI", just not the primary text).
+// NOT_CONFIGURED and INTERNAL are deliberately absent: their messages in this codebase
+// are already written as plain English (e.g. density's "run `just vision run`" hint),
+// so summarizing them would throw away real information for no readability gain.
+const ERROR_KIND_SUMMARY = {
+  upstream_http: "upstream rejected the request",
+  upstream_timeout: "upstream is slow to respond",
+  upstream_parse: "upstream data looks wrong right now",
+  rate_limited: "rate-limited by the upstream",
+  not_found: "upstream endpoint not found",
+};
+
 function setPill(key, envelope) {
   const pill = el(`pill-${key}`);
   const detail = el(`detail-${key}`);
@@ -142,17 +174,23 @@ function setPill(key, envelope) {
   detail.dataset.status = envelope.status;
   if (envelope.status === "error") {
     pill.textContent = "error";
-    detail.textContent = envelope.error ? envelope.error.message : "feed unavailable";
+    const err = envelope.error;
+    const summary = err && ERROR_KIND_SUMMARY[err.kind];
+    detail.textContent = summary || (err ? err.message : "feed unavailable");
+    detail.title = summary && err ? err.message : "";
     return;
   }
   const counted = feed && feed.count ? feed.count(envelope) : `${envelope.records.length} records`;
   if (envelope.status === "stale") {
     pill.textContent = "stale";
-    detail.textContent =
-      `last good ${hhmmss(envelope.fetched_at)} · ${counted}` +
-      (envelope.error ? ` · ${envelope.error.message}` : "");
+    const err = envelope.error;
+    const summary = err && ERROR_KIND_SUMMARY[err.kind];
+    const why = err ? ` · ${summary || err.message}` : "";
+    detail.textContent = `last good ${hhmmss(envelope.fetched_at)} · ${counted}${why}`;
+    detail.title = summary && err ? err.message : "";
     return;
   }
+  detail.title = "";
   pill.textContent = "fresh";
   detail.textContent = `${counted} · ${hhmmss(envelope.fetched_at)}`;
 }
@@ -256,7 +294,10 @@ function layer311(envelope) {
     getRadius: 40,
     radiusMinPixels: 2,
     radiusMaxPixels: 8,
-    getFillColor: [239, 71, 111, 190],
+    getFillColor: [...STATUS_CRITICAL, 200],
+    getLineColor: [255, 255, 255, 120],
+    lineWidthMinPixels: 1,
+    stroked: true,
   });
 }
 
@@ -269,14 +310,14 @@ function bikeLayer(envelope) {
     pickable: true,
     radiusUnits: "meters",
     getPosition: (d) => [d.lon, d.lat],
-    getRadius: (d) => 30 + 3 * Math.sqrt(d.capacity || d.bikes_available + d.docks_available || 1),
+    getRadius: (d) => 26 + 3 * Math.sqrt(d.capacity || d.bikes_available + d.docks_available || 1),
     radiusMinPixels: 2,
     radiusMaxPixels: 14,
     getFillColor: (d) => {
       const total = d.capacity || d.bikes_available + d.docks_available;
-      if (!total) return [141, 153, 174, 200];
-      const ratio = Math.max(0, Math.min(1, d.bikes_available / total));
-      return [17 + 60 * (1 - ratio), 138 * ratio + 60, 178 * ratio + 40, 210];
+      if (!total) return [...MUTED_INK, 160];
+      const ratio = d.bikes_available / total;
+      return [...lerpColor(SEQUENTIAL_BLUE_LIGHT, SEQUENTIAL_BLUE_DARK, ratio), 190];
     },
   });
 }
@@ -297,7 +338,7 @@ function cameraLayer(envelope) {
   });
 }
 
-function renderLayers() {
+function renderLayersNow() {
   if (!overlay) return;
   const layers = [];
   for (const feed of FEEDS) {
@@ -309,6 +350,21 @@ function renderLayers() {
     if (layer) layers.push(layer);
   }
   overlay.setProps({ layers });
+}
+
+let renderScheduled = false;
+
+// On first load, up to 5 feed fetches resolve within milliseconds of each other; without
+// coalescing, each would trigger its own full layer rebuild (rebuilding data for every
+// other already-loaded layer too) and re-upload to the GPU, competing with the basemap
+// for the first paint. One rAF per burst keeps startup to a single layer rebuild.
+function renderLayers() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    renderLayersNow();
+  });
 }
 
 function tooltip({ object, layer }) {
@@ -453,6 +509,13 @@ function initMap() {
   });
   overlay = new deck.MapboxOverlay({ interleaved: false, layers: [], getTooltip: tooltip });
   map.addControl(overlay);
+
+  // Reveal the map once its first full set of tiles has actually painted, instead of
+  // showing a blank/half-loaded frame while a city-wide vector basemap streams in. The
+  // timeout is a safety net only, in case 'idle' never fires cleanly (e.g. one stuck tile).
+  const reveal = () => el("map").classList.add("ready");
+  map.once("idle", reveal);
+  setTimeout(reveal, 4000);
   return true;
 }
 

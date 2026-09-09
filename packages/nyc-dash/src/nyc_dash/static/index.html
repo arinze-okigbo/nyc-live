@@ -25,7 +25,9 @@
     <div id="banner" class="banner" hidden></div>
 
     <main>
-      <div id="map" aria-label="Map of live New York City feeds"></div>
+      <div id="map" aria-label="Map of live New York City feeds">
+        <div id="map-loading"><span class="spinner"></span> loading map…</div>
+      </div>
       <aside id="panel">
         <h2>Layers</h2>
         <p class="hint">
@@ -38,10 +40,10 @@
         <ul class="legend">
           <li><span class="swatch" style="background:#f4d35e"></span> subway train (next stop)</li>
           <li><span class="swatch heat"></span> camera density (people + vehicles)</li>
-          <li><span class="swatch" style="background:#ef476f"></span> 311 service request</li>
-          <li><span class="swatch" style="background:#118ab2"></span> Citi Bike (blue = full,
-            grey = empty)</li>
-          <li><span class="swatch" style="background:#8d99ae"></span> DOT camera</li>
+          <li><span class="swatch" style="background:#d03b3b"></span> 311 service request</li>
+          <li><span class="swatch ramp" style="background:linear-gradient(90deg,#b7d3f6,#104281)"></span>
+            Citi Bike (light = mostly empty, dark = mostly full, grey = no data)</li>
+          <li><span class="swatch" style="background:#898781"></span> DOT camera</li>
         </ul>
         <p class="hint" id="updated">no data yet</p>
       </aside>

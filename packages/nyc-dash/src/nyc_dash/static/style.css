@@ -76,6 +76,44 @@ main {
   background: #0b0e13;
 }
 
+/* The basemap covers all five boroughs on first load, so its vector tiles take a
+   few seconds to finish arriving over the network -- a plain blank/cream frame in
+   that window reads as broken. Fade the map in on the first 'idle' event (all
+   requested tiles loaded) instead of showing that half-loaded state by accident. */
+#map .maplibregl-canvas-container,
+#map > canvas {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+#map.ready .maplibregl-canvas-container,
+#map.ready > canvas {
+  opacity: 1;
+}
+
+#map-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+#map.ready #map-loading { opacity: 0; }
+
+#map-loading .spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--muted);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 #panel {
   flex: 0 0 300px;
   overflow-y: auto;
@@ -103,7 +141,10 @@ main {
   border-radius: 8px;
   padding: 8px 10px;
   margin-bottom: 8px;
+  transition: border-color 0.15s ease;
 }
+
+#layers li:hover { border-color: var(--muted); }
 
 .layer-head { display: flex; align-items: center; gap: 8px; }
 .layer-head label { flex: 1 1 auto; cursor: pointer; }
@@ -121,11 +162,19 @@ main {
 .pill[data-status="error"] { color: var(--error); border-color: var(--error); }
 
 .detail { color: var(--muted); font-size: 11.5px; margin-top: 5px; word-break: break-word; }
-.detail[data-status="error"] { color: #ffb3c4; }
+.detail[data-status="error"] {
+  color: #ffb3c4;
+  text-decoration: underline dotted rgba(255, 179, 196, 0.5);
+  text-underline-offset: 2px;
+  cursor: help;
+}
 
 .legend li { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
 
-.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: 0 0 auto; }
+/* Circular to match the map's dot markers; heat/ramp swatches are continuous scales,
+   so they stay bars -- shape itself signals discrete color vs. a magnitude gradient. */
+.swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.swatch.heat, .swatch.ramp { width: 28px; height: 10px; border-radius: 3px; }
 .swatch.heat { background: linear-gradient(90deg, #2b6cb0, #f6e05e, #e53e3e); }
 
 .deck-tooltip {
