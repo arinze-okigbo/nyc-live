@@ -22,6 +22,7 @@ from nyc_live.contracts import ErrorKind, FeedName, FeedUnavailable, ServiceRequ
 from nyc_live.feeds.civic import Nyc311Adapter
 from nyc_live.feeds.socrata import (
     DATASET_311,
+    NYC_311_STALENESS_CEILING,
     format_floating_timestamp,
     parse_floating_timestamp,
     soda_resource_url,
@@ -69,13 +70,16 @@ def _adapter(settings: Settings, **overrides: Any) -> tuple[Nyc311Adapter, httpx
 
 
 @pytest.mark.live
-async def test_live_311_last_24h(settings: Settings) -> None:
+async def test_live_311_most_recent(settings: Settings) -> None:
+    """The feed queries by recency, not a fixed 24h window (erm2-nwe9 publish lag has been
+    observed live at 37.6h+), so the live assertion is against the staleness ceiling instead
+    of a strict 24h/25h cutoff -- see NYC_311_STALENESS_CEILING."""
     async with make_client(settings) as client:
         snap = await Nyc311Adapter(client=client, settings=settings).fetch()
     assert snap.feed is FeedName.NYC_311
     assert len(snap.records) > 100
-    cutoff = now_utc() - timedelta(hours=25)
-    assert all(r.created_at >= cutoff for r in snap.records)
+    cutoff = now_utc() - NYC_311_STALENESS_CEILING
+    assert snap.records[0].created_at >= cutoff, "newest row must clear the staleness ceiling"
     assert all(r.created_at.tzinfo is not None for r in snap.records)
     assert snap.records == sorted(snap.records, key=lambda r: r.created_at, reverse=True)
     located = [r for r in snap.records if r.lat is not None]
@@ -126,37 +130,66 @@ def test_format_floating_timestamp_renders_local_time() -> None:
     )
 
 
-async def test_311_where_is_last_24h_local_and_ordered_desc(settings: Settings) -> None:
+async def test_311_query_has_no_time_window_and_orders_desc(settings: Settings) -> None:
+    """Recency-only query: no ``$where`` cutoff, ordered newest first, single page.
+
+    This is the fix for erm2-nwe9's real publish lag (observed 37.6h live on
+    2026-09-09): a fixed 24h ``$where`` window returns zero rows whenever lag
+    exceeds it, which is a false "feed is down". Ordering by created_date DESC
+    with no time filter always returns whatever is actually newest.
+    """
     adapter, client = _adapter(settings)
     url = soda_resource_url(settings, DATASET_311)
+    recent = format_floating_timestamp(now_utc())
     async with client, respx.mock() as mock:
-        route = mock.get(url).mock(
-            return_value=httpx.Response(200, json=[_row("1", "2026-09-08T09:15:00.000")])
-        )
-        before = now_utc()
+        route = mock.get(url).mock(return_value=httpx.Response(200, json=[_row("1", recent)]))
         snap = await adapter.fetch()
     params = httpx.QueryParams(route.calls.last.request.url.query)
     assert params["$order"].startswith("created_date DESC")
     assert int(params["$limit"]) <= 20000
     assert params["$offset"] == "0"
-    where = params["$where"]
-    assert where.startswith("created_date > '")
-    literal = where.split("'")[1]
-    expected = format_floating_timestamp(before - timedelta(hours=24))
-    # within a couple of seconds of the expected local literal
-    got = datetime.fromisoformat(literal)
-    assert abs((got - datetime.fromisoformat(expected)).total_seconds()) < 5
-    assert snap.records[0].created_at == datetime(2026, 9, 8, 13, 15, tzinfo=UTC)
+    assert "$where" not in params
+    assert route.call_count == 1
+    assert snap.records[0].unique_key == "1"
+
+
+async def test_311_stale_newest_row_is_loud(settings: Settings) -> None:
+    """A newest row past the staleness ceiling means the pipeline is genuinely stalled,
+    not routine publish lag -- the feed must fail loud rather than serve it as current."""
+    adapter, client = _adapter(settings)
+    url = soda_resource_url(settings, DATASET_311)
+    ancient = format_floating_timestamp(now_utc() - timedelta(days=30))
+    async with client, respx.mock() as mock:
+        mock.get(url).mock(return_value=httpx.Response(200, json=[_row("1", ancient)]))
+        with pytest.raises(FeedUnavailable) as exc_info:
+            await adapter.fetch()
+    assert exc_info.value.kind is ErrorKind.UPSTREAM_PARSE
+    assert "staleness ceiling" in exc_info.value.message
+
+
+async def test_311_lagging_but_within_ceiling_still_succeeds(settings: Settings) -> None:
+    """Publish lag well past 24h (the old fixed window), but inside the staleness
+    ceiling, must still be served -- this is exactly the live bug being fixed."""
+    adapter, client = _adapter(settings)
+    url = soda_resource_url(settings, DATASET_311)
+    lagged = format_floating_timestamp(now_utc() - timedelta(hours=37, minutes=36))
+    async with client, respx.mock() as mock:
+        mock.get(url).mock(return_value=httpx.Response(200, json=[_row("1", lagged)]))
+        snap = await adapter.fetch()
     assert snap.records[0].unique_key == "1"
 
 
 async def test_311_pages_while_page_is_full(settings: Settings) -> None:
-    adapter, client = _adapter(settings, page_size=3)
+    """Production caps Nyc311Adapter at ``max_pages = 1`` (a recency query never needs more
+    than one page); this test overrides it to exercise the shared $offset paging mechanics.
+    """
+    adapter, client = _adapter(settings, page_size=3, max_pages=3)
     url = soda_resource_url(settings, DATASET_311)
+    recent = format_floating_timestamp(now_utc())
     pages = {
-        0: [_row(f"a{i}", "2026-09-08T09:15:00.000") for i in range(3)],
-        3: [_row(f"b{i}", "2026-09-08T09:10:00.000") for i in range(3)],
-        6: [_row("c0", "2026-09-08T09:05:00.000")],
+        0: [_row(f"a{i}", recent) for i in range(3)],
+        3: [_row(f"b{i}", recent) for i in range(3)],
+        6: [_row("c0", recent)],
     }
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -295,7 +328,7 @@ async def test_311_5xx_exhausted_is_upstream_http(settings: Settings) -> None:
     assert exc_info.value.upstream_status == 500
 
 
-async def test_311_empty_window_is_loud(settings: Settings) -> None:
+async def test_311_empty_result_is_loud(settings: Settings) -> None:
     adapter, client = _adapter(settings)
     url = soda_resource_url(settings, DATASET_311)
     async with client, respx.mock() as mock:

@@ -45,8 +45,18 @@ SODA_PAGE_SIZE = 20_000
 SODA_MAX_PAGES = 10
 """Safety cap on ``$offset`` paging (200k rows). Hitting it logs a warning; it never fabricates."""
 
-NYC_311_WINDOW = timedelta(hours=24)
 INSPECTIONS_WINDOW = timedelta(days=90)
+
+NYC_311_STALENESS_CEILING = timedelta(days=7)
+"""erm2-nwe9 publishes in daily batches and has been observed live lagging the
+wall clock by 24-48 h (e.g. 37.6 h on 2026-09-09, newest row created
+2026-09-08T01:51 EDT). A fixed 24 h ``$where`` window is fragile to that: any
+lag past 24 h returns zero rows and the feed goes down for no real reason.
+Nyc311Adapter instead queries by recency alone (``$order`` + ``$limit``, no
+time filter) and uses this ceiling only as a circuit breaker: if even the
+newest row is older than this, the pipeline is genuinely stalled rather than
+routinely lagging, and the feed should fail loud rather than silently serve
+week-old rows as "current" 311 data."""
 
 Row = dict[str, Any]
 
@@ -119,24 +129,30 @@ async def soda_fetch_all(
     *,
     feed: FeedName,
     dataset: str,
-    where: str,
+    where: str | None,
     order: str,
     select: str | None = None,
     page_size: int = SODA_PAGE_SIZE,
     max_pages: int = SODA_MAX_PAGES,
     backoff_s: float = 0.5,
 ) -> list[Row]:
-    """GET every row matching ``where``, paging with ``$offset`` while a page is exactly full."""
+    """GET every row matching ``where``, paging with ``$offset`` while a page is exactly full.
+
+    ``where`` is optional: a feed that queries by recency alone (``$order`` +
+    ``$limit``, no calendar cutoff) passes ``None`` and the clause is omitted
+    entirely rather than sent as an empty string.
+    """
     url = soda_resource_url(settings, dataset)
     headers = soda_headers(settings)
     rows: list[Row] = []
     for page in range(max_pages):
         params: dict[str, str | int | float] = {
-            "$where": where,
             "$order": order,
             "$limit": page_size,
             "$offset": page * page_size,
         }
+        if where:
+            params["$where"] = where
         if select:
             params["$select"] = select
         resp = await get_with_retry(
@@ -216,11 +232,24 @@ class _SocrataAdapter[RecordT: BaseModel]:
     def source_url(self) -> str:
         return soda_resource_url(self._settings, self.dataset)
 
-    def where(self, now: datetime) -> str:
+    def where(self, now: datetime) -> str | None:
+        """Build the ``$where`` clause, or ``None`` for a recency-only query (no time filter)."""
         raise NotImplementedError
 
     def parse_row(self, row: Row) -> RecordT:
         raise NotImplementedError
+
+    def validate_freshness(self, rows: list[Row], fetched_at: datetime) -> None:
+        """Optional circuit breaker for feeds with no calendar ``$where`` window.
+
+        A time-bounded query already fails loud on zero rows if it lags past
+        its own window. A feed that queries by recency alone has no such
+        signal -- a stalled upstream would still return `page_size` real rows,
+        just very old ones -- so subclasses that need one override this to
+        raise `FeedUnavailable` when even the newest row is implausibly stale.
+        Default is a no-op.
+        """
+        return None
 
     async def fetch(self) -> Snapshot[RecordT]:
         await self._limiter.wait(self.name.value)
@@ -251,13 +280,15 @@ class _SocrataAdapter[RecordT: BaseModel]:
             backoff_s=self.backoff_s,
         )
         if not rows:
+            where_desc = self.where(fetched_at) or "no time filter (recency-only query)"
             raise FeedUnavailable(
                 self.name,
-                f"{self.dataset} returned 0 rows for `{self.where(fetched_at)}`; "
+                f"{self.dataset} returned 0 rows for `{where_desc}`; "
                 "upstream is lagging or the query is wrong",
                 kind=ErrorKind.UPSTREAM_PARSE,
                 url=self.source_url,
             )
+        self.validate_freshness(rows, fetched_at)
         records = self._map_rows(rows)
         if not records:
             raise FeedUnavailable(
@@ -313,7 +344,20 @@ class _SocrataAdapter[RecordT: BaseModel]:
 
 
 class Nyc311Adapter(_SocrataAdapter[ServiceRequest]):
-    """Every 311 request created in the last 24 h, city-wide, newest first.
+    """The most recent (up to 20,000) 311 requests city-wide, newest first.
+
+    This is deliberately a recency query (``$order`` + ``$limit``), not a
+    ``created_date > now - 24h`` calendar window: erm2-nwe9 publishes in daily
+    batches and has been observed live lagging the wall clock by well over
+    24 h (37.6 h on 2026-09-09), so a fixed 24 h ``$where`` cutoff can -- and
+    did -- legitimately return zero rows while the feed was perfectly healthy,
+    just running behind. Ordering by ``created_date DESC`` and taking the top
+    page is robust to arbitrary publish lag: it always returns whatever is
+    actually newest, and paging is capped at one page (``max_pages = 1``) so a
+    permanently-caught-up feed doesn't walk the entire multi-million-row table.
+    ``validate_freshness`` is the remaining circuit breaker: if even the
+    newest row is older than ``NYC_311_STALENESS_CEILING``, that is no longer
+    routine lag and the feed fails loud instead of silently serving stale rows.
 
     Rows without coordinates are kept (``ServiceRequest`` is ``MaybeLocated``);
     rows whose coordinates fall outside the NYC bbox are dropped and counted.
@@ -341,10 +385,26 @@ class Nyc311Adapter(_SocrataAdapter[ServiceRequest]):
         )
     )
     require_location = False
-    window = NYC_311_WINDOW
+    max_pages = 1
+    staleness_ceiling = NYC_311_STALENESS_CEILING
 
-    def where(self, now: datetime) -> str:
-        return f"created_date > '{format_floating_timestamp(now - self.window)}'"
+    def where(self, now: datetime) -> str | None:
+        return None
+
+    def validate_freshness(self, rows: list[Row], fetched_at: datetime) -> None:
+        newest = parse_floating_timestamp(rows[0].get("created_date"))
+        if newest is None:
+            return
+        age = fetched_at - newest
+        if age > self.staleness_ceiling:
+            raise FeedUnavailable(
+                self.name,
+                f"{self.dataset}'s newest row is {age} old (created_date={rows[0].get('created_date')!r}), "
+                f"past the {self.staleness_ceiling} staleness ceiling; treating this as a stalled "
+                "upstream pipeline rather than routine publish lag",
+                kind=ErrorKind.UPSTREAM_PARSE,
+                url=self.source_url,
+            )
 
     def parse_row(self, row: Row) -> ServiceRequest:
         created_at = parse_floating_timestamp(row.get("created_date"))

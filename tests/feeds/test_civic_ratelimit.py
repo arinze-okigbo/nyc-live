@@ -200,11 +200,16 @@ async def test_311_non_array_body_releases_the_cadence_floor(settings: Settings)
 
 
 async def test_311_failure_on_a_later_page_releases_the_cadence_floor(settings: Settings) -> None:
-    """Socrata pages with `$offset`; the failure lands on page 3 after two good pages."""
+    """Socrata pages with `$offset`; the failure lands on page 3 after two good pages.
+
+    Production caps Nyc311Adapter at `max_pages = 1` (a recency query never needs more than
+    one page), so this test raises the cap explicitly to exercise mid-paging failure recovery.
+    """
     client = make_client(settings)
     adapter = Nyc311Adapter(client=client, settings=settings)
     adapter.backoff_s = 0.0
     adapter.page_size = 2
+    adapter.max_pages = 3
 
     def respond(request: httpx.Request) -> httpx.Response:
         offset = int(httpx.QueryParams(request.url.query)["$offset"])

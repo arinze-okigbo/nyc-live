@@ -15,15 +15,15 @@ OUT=tests/fixtures/civic
 
 ## 311 service requests (`erm2-nwe9`) -> `nyc311_page.json`
 
-Socrata floating timestamps are NYC local time, so the window literal is
-computed in America/New_York.
+Nyc311Adapter queries by recency alone -- `$order` + `$limit`, no `$where`
+time window -- because erm2-nwe9 publishes in daily batches and has been
+observed live lagging the wall clock by 37.6h+ (2026-09-09); a fixed 24h
+`$where` cutoff returns zero rows whenever lag exceeds it. See
+`NYC_311_STALENESS_CEILING` in `socrata.py`.
 
 ```bash
-SINCE=$(TZ=America/New_York date -d '24 hours ago' +%Y-%m-%dT%H:%M:%S)   # GNU date
-# macOS: SINCE=$(TZ=America/New_York date -v-24H +%Y-%m-%dT%H:%M:%S)
 curl -sS -A "$UA" -G "https://data.cityofnewyork.us/resource/erm2-nwe9.json" \
   ${SOCRATA_APP_TOKEN:+-H "X-App-Token: $SOCRATA_APP_TOKEN"} \
-  --data-urlencode "\$where=created_date > '$SINCE'" \
   --data-urlencode "\$order=created_date DESC" \
   --data-urlencode "\$limit=20" \
   | jq '.' > "$OUT/nyc311_page.json"
