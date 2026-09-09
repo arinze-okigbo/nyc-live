@@ -1,8 +1,10 @@
 """WeatherAdapter: live shape test, fixture replay, and offline behaviour tests.
 
 Behaviour tests use small inline weather.gov-shaped bodies (synthetic logic
-inputs, not fixtures). The replay test loads the recorded Central Park chain
-from tests/fixtures/civic/ and skips naming any missing file.
+inputs, not fixtures). The replay tests load the recorded Central Park chain
+(plus its alerts response) and the recorded JFK alerts response -- a real
+active alert, as of 2026-09-09 -- from tests/fixtures/civic/, and skip naming
+any missing file.
 """
 
 from __future__ import annotations
@@ -18,13 +20,21 @@ import pytest
 import respx
 
 from nyc_live.config import Settings
-from nyc_live.contracts import ErrorKind, FeedName, FeedUnavailable, WeatherReport, now_utc
+from nyc_live.contracts import (
+    ErrorKind,
+    FeedName,
+    FeedUnavailable,
+    WeatherAlertSeverity,
+    WeatherReport,
+    now_utc,
+)
 from nyc_live.feeds.civic import WeatherAdapter
 from nyc_live.feeds.weather import (
     DEFAULT_LOCATIONS,
     Location,
     convert_quantity,
     forecast_temperature_c,
+    parse_alerts,
 )
 from nyc_live.http import make_client
 
@@ -33,8 +43,11 @@ FIXTURE_POINTS = FIXTURES / "weather_points_central_park.json"
 FIXTURE_STATIONS = FIXTURES / "weather_stations_central_park.json"
 FIXTURE_OBSERVATION = FIXTURES / "weather_observation_latest.json"
 FIXTURE_FORECAST = FIXTURES / "weather_forecast.json"
+FIXTURE_ALERTS_CENTRAL_PARK = FIXTURES / "weather_alerts_central_park.json"
+FIXTURE_ALERTS_JFK = FIXTURES / "weather_alerts_jfk.json"
 
 CENTRAL_PARK = DEFAULT_LOCATIONS[0]
+JFK = DEFAULT_LOCATIONS[2]
 
 
 def _load_fixtures(*paths: Path) -> list[Any]:
@@ -57,6 +70,10 @@ def _adapter(
 
 def _points_url(settings: Settings, loc: Location) -> str:
     return f"{settings.weather_base}/points/{loc.lat:.4f},{loc.lon:.4f}"
+
+
+def _alerts_url(settings: Settings, loc: Location) -> str:
+    return f"{settings.weather_base}/alerts/active?point={loc.lat:.4f},{loc.lon:.4f}"
 
 
 # -- synthetic bodies --------------------------------------------------------
@@ -131,6 +148,37 @@ def _forecast_body() -> dict[str, Any]:
     }
 
 
+def _alerts_body(*features: dict[str, Any]) -> dict[str, Any]:
+    return {"features": list(features)}
+
+
+def _alert_feature(
+    *,
+    alert_id: str = "urn:oid:test.1",
+    event: str = "Flood Warning",
+    headline: str | None = "Flood Warning issued for Test Area",
+    severity: str | None = "Severe",
+    urgency: str | None = "Immediate",
+    area_desc: str | None = "Test County",
+    effective: str = "2026-09-08T12:00:00-04:00",
+    expires: str | None = "2026-09-09T00:00:00-04:00",
+) -> dict[str, Any]:
+    return {
+        "id": alert_id,
+        "type": "Feature",
+        "properties": {
+            "id": alert_id,
+            "event": event,
+            "headline": headline,
+            "severity": severity,
+            "urgency": urgency,
+            "areaDesc": area_desc,
+            "effective": effective,
+            "expires": expires,
+        },
+    }
+
+
 def _mock_station_chain(
     mock: respx.MockRouter,
     settings: Settings,
@@ -140,6 +188,7 @@ def _mock_station_chain(
     lat: float,
     lon: float,
     observation: dict[str, Any] | None = None,
+    alerts: dict[str, Any] | None = None,
 ) -> None:
     base = settings.weather_base
     mock.get(_points_url(settings, loc)).mock(
@@ -155,6 +204,9 @@ def _mock_station_chain(
     )
     mock.get(f"{base}/gridpoints/OKX/33,37/forecast", params={"tag": station_id}).mock(
         return_value=httpx.Response(200, json=_forecast_body())
+    )
+    mock.get(_alerts_url(settings, loc)).mock(
+        return_value=httpx.Response(200, json=alerts if alerts is not None else _alerts_body())
     )
 
 
@@ -174,6 +226,9 @@ async def test_live_weather_one_report_per_station(settings: Settings) -> None:
     assert any(r.observation.observed_at >= cutoff for r in snap.records)
     assert all(r.forecast for r in snap.records)
     for r in snap.records:
+        assert isinstance(r.alerts, list)  # empty is the normal case, but always a list
+        for alert in r.alerts:
+            assert alert.effective.tzinfo is not None
         if r.observation.temperature_c is not None:
             assert -40 < r.observation.temperature_c < 50
 
@@ -184,8 +239,12 @@ async def test_live_weather_one_report_per_station(settings: Settings) -> None:
 
 
 async def test_replay_weather_fixture(settings: Settings) -> None:
-    points, stations, observation, forecast = _load_fixtures(
-        FIXTURE_POINTS, FIXTURE_STATIONS, FIXTURE_OBSERVATION, FIXTURE_FORECAST
+    points, stations, observation, forecast, alerts = _load_fixtures(
+        FIXTURE_POINTS,
+        FIXTURE_STATIONS,
+        FIXTURE_OBSERVATION,
+        FIXTURE_FORECAST,
+        FIXTURE_ALERTS_CENTRAL_PARK,
     )
     stations_url = points["properties"]["observationStations"]
     forecast_url = points["properties"]["forecast"]
@@ -201,6 +260,9 @@ async def test_replay_weather_fixture(settings: Settings) -> None:
             return_value=httpx.Response(200, json=observation)
         )
         mock.get(forecast_url).mock(return_value=httpx.Response(200, json=forecast))
+        mock.get(_alerts_url(settings, CENTRAL_PARK)).mock(
+            return_value=httpx.Response(200, json=alerts)
+        )
         snap = await adapter.fetch()
     assert len(snap.records) == 1
     report = snap.records[0]
@@ -208,7 +270,25 @@ async def test_replay_weather_fixture(settings: Settings) -> None:
     assert report.station_id == station_id
     assert report.observation.observed_at.tzinfo is not None
     assert len(report.forecast) == len(forecast["properties"]["periods"])
+    # Central Park had no active alerts when this fixture was recorded (2026-09-09) --
+    # that is success, not failure; the field is an empty list, never omitted or errored.
+    assert report.alerts == []
     assert snap.upstream_generated_at == report.observation.observed_at
+
+
+async def test_replay_weather_alerts_fixture_real_active_alert(settings: Settings) -> None:
+    """JFK had one real active alert (a Rip Current Statement) when recorded on 2026-09-09."""
+    (alerts_body,) = _load_fixtures(FIXTURE_ALERTS_JFK)
+    alerts = parse_alerts(alerts_body)
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.event == "Rip Current Statement"
+    assert alert.severity is WeatherAlertSeverity.MODERATE
+    assert alert.urgency == "Expected"
+    assert alert.area_desc is not None and "Queens" in alert.area_desc
+    assert alert.effective.tzinfo is not None
+    assert alert.expires is not None and alert.expires.tzinfo is not None
+    assert alert.headline is not None and "Rip Current" in alert.headline
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +358,7 @@ async def test_weather_builds_one_report_per_station_with_converted_units(
     assert afternoon.start == datetime(2026, 9, 8, 17, 0, tzinfo=UTC)
     assert tonight.temperature_c == 15.0
     assert tonight.precip_probability_pct is None
+    assert report.alerts == []  # no alerts mocked -> empty list, not an error
     assert snap.upstream_generated_at == obs.observed_at
     assert snap.stale_after == snap.fetched_at + adapter.ttl
 
@@ -406,13 +487,132 @@ async def test_weather_unknown_unit_is_parse_error(settings: Settings) -> None:
 
 async def test_weather_station_outside_bbox_is_rejected(settings: Settings) -> None:
     adapter, client = _adapter(settings, locations=(CENTRAL_PARK,))
-    # observation/forecast routes are deliberately never reached
+    # observation/forecast/alerts routes are deliberately never reached
     async with client, respx.mock(assert_all_called=False) as mock:
         _mock_station_chain(mock, settings, CENTRAL_PARK, "KBOS", lat=42.36, lon=-71.01)
         with pytest.raises(FeedUnavailable) as exc_info:
             await adapter.fetch()
     assert exc_info.value.kind is ErrorKind.UPSTREAM_PARSE
     assert "outside the NYC bbox" in exc_info.value.message
+
+
+# ---------------------------------------------------------------------------
+# alerts
+# ---------------------------------------------------------------------------
+
+
+def test_parse_alerts_empty_features_is_empty_list() -> None:
+    assert parse_alerts(_alerts_body()) == []
+
+
+def test_parse_alerts_maps_real_feature_shape() -> None:
+    body = _alerts_body(_alert_feature())
+    alerts = parse_alerts(body)
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.id == "urn:oid:test.1"
+    assert alert.event == "Flood Warning"
+    assert alert.headline == "Flood Warning issued for Test Area"
+    assert alert.severity is WeatherAlertSeverity.SEVERE
+    assert alert.urgency == "Immediate"
+    assert alert.area_desc == "Test County"
+    assert alert.effective == datetime(2026, 9, 8, 16, 0, tzinfo=UTC)
+    assert alert.expires == datetime(2026, 9, 9, 4, 0, tzinfo=UTC)
+
+
+def test_parse_alerts_nullable_fields_stay_none() -> None:
+    body = _alerts_body(_alert_feature(headline=None, urgency=None, area_desc=None, expires=None))
+    alert = parse_alerts(body)[0]
+    assert alert.headline is None
+    assert alert.urgency is None
+    assert alert.area_desc is None
+    assert alert.expires is None  # never filled
+
+
+def test_parse_alerts_unrecognized_severity_falls_back_to_unknown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = _alerts_body(_alert_feature(severity="TotallyMadeUp"))
+    with caplog.at_level(logging.WARNING, logger="nyc_live.feeds.weather"):
+        alert = parse_alerts(body)[0]
+    assert alert.severity is WeatherAlertSeverity.UNKNOWN
+    assert any("unrecognized alert severity" in rec.message for rec in caplog.records)
+
+
+def test_parse_alerts_missing_id_raises() -> None:
+    body = {
+        "features": [
+            {"properties": {k: v for k, v in _alert_feature()["properties"].items() if k != "id"}}
+        ]
+    }
+    with pytest.raises(ValueError, match="`id`"):
+        parse_alerts(body)
+
+
+def test_parse_alerts_missing_event_raises() -> None:
+    props = {k: v for k, v in _alert_feature()["properties"].items() if k != "event"}
+    with pytest.raises(ValueError, match="`event`"):
+        parse_alerts({"features": [{"properties": props}]})
+
+
+def test_parse_alerts_not_a_list_raises() -> None:
+    with pytest.raises(ValueError, match="features"):
+        parse_alerts({"features": "not-a-list"})
+
+
+async def test_weather_report_carries_alerts_from_gather(settings: Settings) -> None:
+    adapter, client = _adapter(settings, locations=(CENTRAL_PARK,))
+    async with client, respx.mock(assert_all_called=True) as mock:
+        _mock_station_chain(
+            mock,
+            settings,
+            CENTRAL_PARK,
+            "KNYC",
+            lat=40.78,
+            lon=-73.97,
+            alerts=_alerts_body(_alert_feature()),
+        )
+        snap = await adapter.fetch()
+    report = snap.records[0]
+    assert len(report.alerts) == 1
+    assert report.alerts[0].event == "Flood Warning"
+    assert report.alerts[0].severity is WeatherAlertSeverity.SEVERE
+
+
+async def test_weather_alerts_endpoint_failure_fails_that_location_like_observation_does(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Alerts is fetched inside the same gather() as observation/forecast: a failure there
+    must propagate the same way, taking down only that location's report -- not silently
+    swallowed, and not treated as "no alerts"."""
+    adapter, client = _adapter(settings)
+    with caplog.at_level(logging.WARNING, logger="nyc_live.feeds.weather"):
+        async with client, respx.mock() as mock:
+            _mock_station_chain(mock, settings, DEFAULT_LOCATIONS[0], "KNYC", lat=40.78, lon=-73.97)
+            mock.get(_alerts_url(settings, DEFAULT_LOCATIONS[1])).mock(
+                return_value=httpx.Response(500)
+            )
+            # LaGuardia's points/stations/observation/forecast still need mocking up to
+            # the point where alerts fails.
+            base = settings.weather_base
+            mock.get(_points_url(settings, DEFAULT_LOCATIONS[1])).mock(
+                return_value=httpx.Response(200, json=_points_body(base, "KLGA"))
+            )
+            mock.get(f"{base}/gridpoints/OKX/33,37/stations", params={"tag": "KLGA"}).mock(
+                return_value=httpx.Response(
+                    200, json=_stations_body("KLGA", "LaGuardia station", 40.78, -73.88)
+                )
+            )
+            mock.get(f"{base}/stations/KLGA/observations/latest").mock(
+                return_value=httpx.Response(200, json=_observation_body())
+            )
+            mock.get(f"{base}/gridpoints/OKX/33,37/forecast", params={"tag": "KLGA"}).mock(
+                return_value=httpx.Response(200, json=_forecast_body())
+            )
+            _mock_station_chain(mock, settings, DEFAULT_LOCATIONS[2], "KJFK", lat=40.64, lon=-73.76)
+            snap = await adapter.fetch()
+    assert [r.station_id for r in snap.records] == ["KNYC", "KJFK"]
+    assert any("skipping LaGuardia" in rec.message for rec in caplog.records)
 
 
 async def test_weather_empty_station_list_is_parse_error(settings: Settings) -> None:

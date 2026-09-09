@@ -518,11 +518,38 @@ class WeatherForecastPeriod(StrictModel):
     wind_speed: str | None = None
 
 
+class WeatherAlertSeverity(StrEnum):
+    EXTREME = "Extreme"
+    SEVERE = "Severe"
+    MODERATE = "Moderate"
+    MINOR = "Minor"
+    UNKNOWN = "Unknown"
+
+
+class WeatherAlert(StrictModel):
+    """One active NWS alerts.weather.gov entry (heat advisory, flood warning, etc.).
+
+    Distinct from WeatherForecastPeriod: a forecast period always exists and describes
+    ordinary conditions; an alert exists only when NWS has issued one for the area, and
+    an empty WeatherReport.alerts list is the normal, common case, not a failure.
+    """
+
+    id: str
+    event: str
+    headline: str | None
+    severity: WeatherAlertSeverity
+    urgency: str | None = None
+    area_desc: str | None = None
+    effective: AwareDatetime
+    expires: AwareDatetime | None = None
+
+
 class WeatherReport(Located):
     station_id: str
     station_name: str
     observation: WeatherObservation
     forecast: list[WeatherForecastPeriod] = Field(default_factory=list)
+    alerts: list[WeatherAlert] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,129 @@
+{
+  "@context": [
+    "https://geojson.org/geojson-ld/geojson-context.jsonld",
+    {
+      "@version": "1.1",
+      "wx": "https://api.weather.gov/ontology#",
+      "geo": "http://www.opengis.net/ont/geosparql#",
+      "unit": "http://codes.wmo.int/common/unit/",
+      "@vocab": "https://api.weather.gov/ontology#"
+    }
+  ],
+  "type": "Feature",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [
+          -73.9589,
+          40.7636
+        ],
+        [
+          -73.9544,
+          40.7853
+        ],
+        [
+          -73.9831,
+          40.7887
+        ],
+        [
+          -73.9876,
+          40.767
+        ],
+        [
+          -73.9589,
+          40.7636
+        ]
+      ]
+    ]
+  },
+  "properties": {
+    "units": "us",
+    "forecastGenerator": "BaselineForecastGenerator",
+    "generatedAt": "2026-09-09T10:23:11+00:00",
+    "updateTime": "2026-09-09T09:33:50+00:00",
+    "validTimes": "2026-09-09T03:00:00+00:00/P7DT22H",
+    "elevation": {
+      "unitCode": "wmoUnit:m",
+      "value": 24.9936
+    },
+    "periods": [
+      {
+        "number": 1,
+        "name": "Today",
+        "startTime": "2026-09-09T06:00:00-04:00",
+        "endTime": "2026-09-09T18:00:00-04:00",
+        "isDaytime": true,
+        "temperature": 86,
+        "temperatureUnit": "F",
+        "temperatureTrend": null,
+        "probabilityOfPrecipitation": {
+          "unitCode": "wmoUnit:percent",
+          "value": 2
+        },
+        "windSpeed": "0 to 9 mph",
+        "windDirection": "SW",
+        "icon": "https://api.weather.gov/icons/land/day/bkn?size=medium",
+        "shortForecast": "Partly Sunny",
+        "detailedForecast": "Partly sunny, with a high near 86. Southwest wind 0 to 9 mph, with gusts as high as 21 mph."
+      },
+      {
+        "number": 2,
+        "name": "Tonight",
+        "startTime": "2026-09-09T18:00:00-04:00",
+        "endTime": "2026-09-10T06:00:00-04:00",
+        "isDaytime": false,
+        "temperature": 73,
+        "temperatureUnit": "F",
+        "temperatureTrend": null,
+        "probabilityOfPrecipitation": {
+          "unitCode": "wmoUnit:percent",
+          "value": 28
+        },
+        "windSpeed": "8 to 12 mph",
+        "windDirection": "SW",
+        "icon": "https://api.weather.gov/icons/land/night/sct/rain_showers,30?size=medium",
+        "shortForecast": "Partly Cloudy then Chance Rain Showers",
+        "detailedForecast": "A chance of rain showers after 2am. Partly cloudy. Low around 73, with temperatures rising to around 75 overnight. Southwest wind 8 to 12 mph. Chance of precipitation is 30%."
+      },
+      {
+        "number": 3,
+        "name": "Thursday",
+        "startTime": "2026-09-10T06:00:00-04:00",
+        "endTime": "2026-09-10T18:00:00-04:00",
+        "isDaytime": true,
+        "temperature": 86,
+        "temperatureUnit": "F",
+        "temperatureTrend": null,
+        "probabilityOfPrecipitation": {
+          "unitCode": "wmoUnit:percent",
+          "value": 28
+        },
+        "windSpeed": "6 to 9 mph",
+        "windDirection": "W",
+        "icon": "https://api.weather.gov/icons/land/day/rain_showers,30/rain_showers,20?size=medium",
+        "shortForecast": "Chance Rain Showers",
+        "detailedForecast": "A chance of rain showers. Partly sunny, with a high near 86. West wind 6 to 9 mph. Chance of precipitation is 30%."
+      },
+      {
+        "number": 4,
+        "name": "Thursday Night",
+        "startTime": "2026-09-10T18:00:00-04:00",
+        "endTime": "2026-09-11T06:00:00-04:00",
+        "isDaytime": false,
+        "temperature": 68,
+        "temperatureUnit": "F",
+        "temperatureTrend": null,
+        "probabilityOfPrecipitation": {
+          "unitCode": "wmoUnit:percent",
+          "value": 26
+        },
+        "windSpeed": "3 to 7 mph",
+        "windDirection": "NW",
+        "icon": "https://api.weather.gov/icons/land/night/rain_showers,30?size=medium",
+        "shortForecast": "Chance Rain Showers",
+        "detailedForecast": "A chance of rain showers before 2am. Mostly cloudy. Low around 68, with temperatures rising to around 70 overnight. Northwest wind 3 to 7 mph. Chance of precipitation is 30%. New rainfall amounts less than a tenth of an inch possible."
+      }
+    ]
+  }
+}

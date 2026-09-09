@@ -6,10 +6,18 @@ Flow per default location (Central Park, LaGuardia, JFK):
 1. ``GET /points/{lat},{lon}`` -> ``properties.observationStations`` (URL) and
    ``properties.forecast`` (URL). Station ids are looked up, never assumed.
 2. ``GET <observationStations>`` -> first feature is the nearest station.
-3. ``GET /stations/{id}/observations/latest`` and ``GET <forecast>`` concurrently.
+3. ``GET /stations/{id}/observations/latest``, ``GET <forecast>``, and
+   ``GET /alerts/active?point={lat},{lon}`` concurrently.
 
 Units are converted to the contract (C, km/h, Pa, m, mm). weather.gov returns
 ``null`` values often; they stay ``None``, never filled.
+
+Active alerts (``/alerts/active``) are a GeoJSON FeatureCollection; an empty
+``features`` array is the normal, common case (no advisory/warning right now)
+and produces an empty ``WeatherReport.alerts`` list, not an error. A genuine
+HTTP/parse failure of the alerts endpoint fails the whole per-location report
+the same way an observation or forecast failure does -- it is fetched inside
+the same ``asyncio.gather`` and is not special-cased to swallow errors.
 """
 
 from __future__ import annotations
@@ -32,6 +40,8 @@ from nyc_live.contracts import (
     FeedName,
     FeedUnavailable,
     Snapshot,
+    WeatherAlert,
+    WeatherAlertSeverity,
     WeatherForecastPeriod,
     WeatherObservation,
     WeatherReport,
@@ -210,6 +220,66 @@ def parse_forecast(body: object) -> list[WeatherForecastPeriod]:
     return out
 
 
+def _alert_severity(raw: object) -> WeatherAlertSeverity:
+    """Map NWS's ``severity`` string onto the contract enum.
+
+    NWS's own CAP profile guarantees this field is always one of Extreme /
+    Severe / Moderate / Minor / Unknown -- ``WeatherAlertSeverity.UNKNOWN`` is
+    one of *their* defined values, not a bucket we invented. So an
+    unrecognized string here means the upstream sent something outside its
+    own published spec, not that we're missing data. Rather than lose an
+    otherwise-valid observation + forecast (and every *other* active alert)
+    over one alert's one surprising field, we log loudly and fall back to the
+    real "Unknown" member. This is narrower than this file's other parsers:
+    ``convert_quantity``/``forecast_temperature_c`` still raise on an unknown
+    *unit*, because guessing there would silently fabricate a wrong number --
+    there is no such risk in recording "severity unrecognized" honestly.
+    """
+    try:
+        return WeatherAlertSeverity(raw)
+    except ValueError:
+        log.warning("weather: unrecognized alert severity %r; recording as Unknown", raw)
+        return WeatherAlertSeverity.UNKNOWN
+
+
+def parse_alerts(body: object) -> list[WeatherAlert]:
+    if not isinstance(body, Mapping):
+        raise ValueError("alerts: body is not an object")
+    features = body.get("features")
+    if not isinstance(features, list):
+        raise ValueError("alerts: `features` is not a list")
+    out: list[WeatherAlert] = []
+    for raw in features:
+        if not isinstance(raw, Mapping):
+            raise ValueError("alerts: feature is not an object")
+        props = raw.get("properties")
+        if not isinstance(props, Mapping):
+            raise ValueError("alerts: feature has no `properties` object")
+        alert_id = props.get("id")
+        if not isinstance(alert_id, str) or not alert_id:
+            raise ValueError("alerts: feature has no `id`")
+        event = props.get("event")
+        if not isinstance(event, str) or not event:
+            raise ValueError(f"alerts: feature {alert_id!r} has no `event`")
+        headline = props.get("headline")
+        urgency = props.get("urgency")
+        area_desc = props.get("areaDesc")
+        expires = props.get("expires")
+        out.append(
+            WeatherAlert(
+                id=alert_id,
+                event=event,
+                headline=str(headline) if headline else None,
+                severity=_alert_severity(props.get("severity")),
+                urgency=str(urgency) if urgency else None,
+                area_desc=str(area_desc) if area_desc else None,
+                effective=_parse_iso(props.get("effective"), f"alerts[{alert_id}].effective"),
+                expires=_parse_iso(expires, f"alerts[{alert_id}].expires") if expires else None,
+            )
+        )
+    return out
+
+
 @dataclass(frozen=True)
 class _Station:
     id: str
@@ -372,8 +442,9 @@ class WeatherAdapter:
                     f"station {station.id} at ({station.lat}, {station.lon}) is outside the NYC bbox"
                 )
             obs_url = f"{self.base}/stations/{station.id}/observations/latest"
-            obs_body, forecast_body = await asyncio.gather(
-                self._get_json(obs_url), self._get_json(forecast_url)
+            alerts_url = f"{self.base}/alerts/active?point={loc.lat:.4f},{loc.lon:.4f}"
+            obs_body, forecast_body, alerts_body = await asyncio.gather(
+                self._get_json(obs_url), self._get_json(forecast_url), self._get_json(alerts_url)
             )
             return WeatherReport(
                 lat=station.lat,
@@ -382,6 +453,7 @@ class WeatherAdapter:
                 station_name=station.name,
                 observation=parse_observation(obs_body),
                 forecast=parse_forecast(forecast_body),
+                alerts=parse_alerts(alerts_body),
             )
         except FeedUnavailable:
             raise
@@ -400,6 +472,7 @@ __all__ = [
     "WeatherAdapter",
     "convert_quantity",
     "forecast_temperature_c",
+    "parse_alerts",
     "parse_forecast",
     "parse_observation",
 ]

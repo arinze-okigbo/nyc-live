@@ -1,8 +1,11 @@
 # Recording the civic fixtures
 
-These fixtures are trimmed copies of real upstream responses. They could not be
-recorded from the build sandbox (data.cityofnewyork.us and api.weather.gov are
-blocked by policy there), so record them on a machine with network access.
+These fixtures are trimmed copies of real upstream responses. Some were
+recorded from a build sandbox that had no network access to
+data.cityofnewyork.us or api.weather.gov -- if that's true for you too,
+record them on a machine with network access instead. api.weather.gov in
+particular has since been confirmed reachable from at least one sandbox
+(2026-09-09); try it directly before assuming it's blocked.
 Never hand-edit or invent a fixture; re-run the commands instead.
 
 Run from the repo root. `jq` is required. Every request sends the same
@@ -72,6 +75,25 @@ curl -sS -A "$UA" -H 'Accept: application/geo+json' \
 FORECAST=$(jq -r '.properties.forecast' "$OUT/weather_points_central_park.json")
 curl -sS -A "$UA" -H 'Accept: application/geo+json' "$FORECAST" \
   | jq '.properties.periods |= .[:4]' > "$OUT/weather_forecast.json"
+```
+
+## weather.gov active alerts -> `weather_alerts_central_park.json`, `weather_alerts_jfk.json`
+
+`GET /alerts/active?point={lat},{lon}` for each `WeatherAdapter` location. An
+empty `features` array (no advisory/warning right now) is the normal, common
+case -- it is kept as its own fixture, not treated as something to avoid
+recording. `weather_alerts_jfk.json` happened to have one real active alert
+(a Rip Current Statement) when recorded on 2026-09-09; kept whole since it is
+only one feature.
+
+```bash
+curl -sS -A "$UA" -H 'Accept: application/geo+json' \
+  "https://api.weather.gov/alerts/active?point=40.7789,-73.9692" \
+  | jq '.' > "$OUT/weather_alerts_central_park.json"
+
+curl -sS -A "$UA" -H 'Accept: application/geo+json' \
+  "https://api.weather.gov/alerts/active?point=40.6413,-73.7781" \
+  | jq '.' > "$OUT/weather_alerts_jfk.json"
 ```
 
 ## Verify

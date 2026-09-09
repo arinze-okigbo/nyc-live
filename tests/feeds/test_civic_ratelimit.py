@@ -145,6 +145,10 @@ def _weather_forecast() -> dict[str, Any]:
     }
 
 
+def _weather_alerts() -> dict[str, Any]:
+    return {"features": []}
+
+
 def _mock_weather_chain(mock: respx.MockRouter, base: str, loc: Location) -> None:
     mock.get(f"{base}/points/{loc.lat:.4f},{loc.lon:.4f}").mock(
         return_value=httpx.Response(200, json=_weather_points(base))
@@ -157,6 +161,9 @@ def _mock_weather_chain(mock: respx.MockRouter, base: str, loc: Location) -> Non
     )
     mock.get(f"{base}/gridpoints/OKX/33,37/forecast").mock(
         return_value=httpx.Response(200, json=_weather_forecast())
+    )
+    mock.get(f"{base}/alerts/active?point={loc.lat:.4f},{loc.lon:.4f}").mock(
+        return_value=httpx.Response(200, json=_weather_alerts())
     )
 
 
