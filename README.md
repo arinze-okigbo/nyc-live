@@ -2,9 +2,9 @@
 
 Live NYC civic data, three ways:
 
-1. **nyc-mcp**: an MCP server exposing subway, cameras, Citi Bike, 311, restaurant inspections, and weather as typed tools for Claude Code and Claude Desktop.
+1. **nyc-mcp**: an MCP server exposing subway (arrivals, alerts, static route shapes), cameras, MTA bus positions, Citi Bike, 311, restaurant inspections, and weather as typed tools for Claude Code and Claude Desktop.
 2. **nyc-vision**: a pedestrian and vehicle density pipeline running YOLO over NYC DOT traffic camera frames, writing counts to DuckDB.
-3. **nyc-dash**: a single-page live map: subway positions, camera density heatmap, 311 stream, weather, Citi Bike levels.
+3. **nyc-dash**: a single-page live map: subway positions and route shapes, camera density heatmap, 311 stream, weather (with a severe-alert indicator), Citi Bike levels, and an opt-in bus layer, plus a station/dock/camera/route search box, a borough filter, and a shareable map URL.
 
 Layers 2 and 3 consume layer 1 through the shared service layer in `src/nyc_live/services`.
 
@@ -84,13 +84,16 @@ Every data tool returns an `Envelope` (`src/nyc_live/contracts.py`) with `status
 | `get_camera_frame` | MCP image block plus `Envelope[CameraFrame]` | 2 s per camera |
 | `subway_arrivals` | `Envelope[SubwayArrival]`, soonest first | 30 s |
 | `subway_alerts` | `Envelope[SubwayAlert]` | 60 s |
+| `subway_route_shapes` | `Envelope[SubwayRouteShape]`, static GTFS route polylines | 24 h |
+| `bus_positions` | `Envelope[BusVehicle]`, key-gated on `MTA_BUS_TIME_API_KEY` | 30 s |
 | `citibike_status` | `Envelope[BikeStation]` | 60 s |
 | `nearby_311` | `Envelope[ServiceRequest]` | 5 min |
-| `weather_now` | `Envelope[WeatherReport]`, one per NWS station | 5 min |
+| `weather_now` | `Envelope[WeatherReport]`, one per NWS station, includes active alerts | 5 min |
 | `query_warehouse` | `Envelope[WarehouseResult]`, read-only SQL over DuckDB | computed per call |
 | `feed_health` | per-feed `FeedHealth` list plus store status, no fetch | instant |
 | `density_now` | `Envelope[CameraDensity]` per camera | 60 s |
 | `density_history` | `Envelope[CameraDensity]` per camera and time bucket | 60 s |
+| `camera_density_history` | `Envelope[CameraDensity]`, one camera's trend bucketed for a chart | 60 s |
 
 ## Layout
 
@@ -120,7 +123,7 @@ docs/                  architecture, privacy, MCP tools, vision pipeline, dashbo
 | Citi Bike GBFS | discovered from `https://gbfs.citibikenyc.com/gbfs/gbfs.json` | none |
 | 311 (`erm2-nwe9`) and DOHMH inspections (`43nn-pn8j`) | `https://data.cityofnewyork.us` (Socrata) | optional `SOCRATA_APP_TOKEN` |
 | Weather | `https://api.weather.gov` | none; descriptive User-Agent required |
-| MTA Bus Time | `https://bustime.mta.info/api/siri/vehicle-monitoring.json` | `MTA_BUS_TIME_API_KEY`; deferred stub, raises even with a key |
+| MTA Bus Time | `https://bustime.mta.info/api/siri/vehicle-monitoring.json` | `MTA_BUS_TIME_API_KEY`; implemented and verified live (`src/nyc_live/feeds/bus.py`) |
 | 511NY cameras | `https://511ny.org/api/getcameras` | `NY511_API_KEY`; unverified live |
 
 Base URLs are settings (`src/nyc_live/config.py`) and can be overridden with `NYC_LIVE_*_BASE` variables for tests. The legacy `web.mta.info/.../google_transit.zip` returns 403 and is not used.

@@ -33,7 +33,7 @@ With no store the `density` endpoint answers `status="error"`, `error.kind="inte
 | `GET /api/<feed>` | that feed's `contracts.Envelope`, serialised unchanged |
 | `GET /api/health` | `FeedRegistry.health()` plus the DuckDB store state |
 | `GET /api/stream` | Server-Sent Events, one envelope per feed per cycle |
-| `GET /` | the single page (`static/index.html`, `app.js`, `style.css`) |
+| `GET /` | the single page (`static/index.html` plus the `static/js/` and `static/css/` assets) |
 | `GET /docs` | FastAPI's OpenAPI page |
 
 Feed keys, with aliases in brackets (`api.py::ROUTES`):
@@ -42,8 +42,10 @@ Feed keys, with aliases in brackets (`api.py::ROUTES`):
 |---|---|---|---|---|
 | `dot_cameras` (`cameras`) | `dot_cameras` | yes | none | 1000 m |
 | `density` | `density` | yes | 500 | 1000 m |
+| `camera_density_history` | `density` | no | 500 | n/a |
 | `subway_arrivals` (`subway`) | `mta_subway` | yes | 1000 | 500 m |
 | `mta_subway` (`subway_trips`) | `mta_subway` | no | 500 | n/a |
+| `mta_subway_shapes` (`subway_shapes`) | `mta_subway_shapes` | no | none | n/a |
 | `mta_subway_stops` (`subway_stops`, `stops`) | `mta_subway_stops` | yes | none | 1000 m |
 | `mta_subway_alerts` (`subway_alerts`, `alerts`) | `mta_subway_alerts` | yes | 200 | 800 m |
 | `citibike` (`bikes`) | `citibike` | yes | 2500 | 1000 m |
@@ -58,6 +60,13 @@ plus `stop_id` and `horizon_s` for `subway_arrivals`, `complaint_type` for `nyc_
 `camera_id` and `window_s` for `density`. A filtered response sets `query`,
 `total_before_filter`, `truncated`, and `distance_m` on each record, exactly as the service
 layer produced them.
+
+`camera_density_history` requires `camera_id` and has no geo support; it reuses the same
+`window_s` argument as `density`, but here it means how far back to look (default 300 s at
+this HTTP layer, matching `density`'s own default -- pass `window_s=3600` for the trailing
+hour, which is what the map's camera-click trend chart does). `mta_subway_shapes` has no
+lat/lon of its own (each record is a polyline, not a point), so it is not geo-filterable
+either; the frontend fetches it once at boot rather than filtering it.
 
 `GET /api/health` returns the same shape as the MCP `feed_health` tool: `checked_at`, a
 `store` object (`path`, `open`, `read_only`) and a `feeds` list of `FeedHealth` entries
@@ -130,16 +139,16 @@ faster than a TTL just re-serves the cached snapshot.
 The stream is an optimisation, not a requirement. Every event name is also a
 `GET /api/<feed>` endpoint returning the identical envelope, so a client that cannot hold an
 `EventSource` open (no SSE support, a buffering proxy, a stream error) polls those endpoints
-on the same cadence instead. `static/app.js` does exactly that: it loads with one GET per feed
-for fast first data, then opens the stream; on the first `EventSource` error it closes the
-source and switches to `setInterval` polling every 15 s. The connection pill in the header
+on the same cadence instead. `static/js/data-sync.js` does exactly that: it loads with one GET
+per feed for fast first data, then opens the stream; on the first `EventSource` error it closes
+the source and switches to `setInterval` polling every 15 s. The connection pill in the header
 says which mode is active: "connecting", "live (SSE)" or "polling every 15s", with the reason
 for the fallback in its tooltip.
 
 ## Per-layer degradation
 
-Degradation is per layer and is driven only by `envelope.status` (`app.js::setPill` and
-`app.js::renderLayers`):
+Degradation is per layer and is driven only by `envelope.status` (`status-panel.js::setPill`
+and `map-layers.js::renderLayers`):
 
 * **fresh**: the pill says `fresh` and the detail line shows the record count and the fetch
   time.
@@ -153,7 +162,10 @@ A layer with no data is absent, never a placeholder shape or a filled-in value, 
 failing changes nothing about any other layer. If the dashboard API itself is unreachable,
 `fetchFeed` synthesises an `error` envelope saying "dashboard API unreachable" for that layer
 rather than inventing records. Layers are toggleable; `subway_arrivals`, `density`, `nyc_311`
-and `citibike` are on by default and `dot_cameras` is off.
+and `citibike` are on by default, and `dot_cameras`, `dohmh_inspections` and `mta_bus` are off
+(opt-in: they are either dense data or, for buses, off unless the user searches for a route --
+see "Search" below). The static subway route-shape backdrop (`mta_subway_shapes`) is not one
+of these toggleable layers at all; it always draws once fetched.
 
 The weather badge follows the same rule: `error` shows "weather unavailable" with the message
 in the tooltip, and `stale` appends "last good HH:MM:SS". `density` is `error` with
@@ -161,10 +173,116 @@ in the tooltip, and `stale` appends "last good HH:MM:SS". `density` is `error` w
 simply hidden and the panel says why. `tests/dash/test_degradation.py` covers the per-feed
 behaviour server-side and `tests/dash/test_frontend.py` asserts the strings in `app.js`.
 
+## Search
+
+The sidebar search box (`static/js/search.js`) finds a subway station (by stop name), a Citi
+Bike dock (by name), a DOT camera (by name), or a bus route (by number) among data the page
+has already polled; there is no dedicated search endpoint. Matches are grouped by kind and,
+within a kind, sorted nearest-first from the map's current center (`currentSearchOrigin`,
+Haversine distance); bus routes have no single point to measure from and keep an alphabetical
+order instead. Selecting a subway, Citi Bike, or camera result flies the map to it (zoom 16)
+and opens that record's real detail panel through the same lookup table (`DETAIL_BUILDERS`) a
+map click uses. Selecting a bus route does not fly anywhere -- a route is many live vehicles,
+not one point -- instead it sets the shared `highlightedBusRoute` value so `busLayer`
+(`map-layers.js`) brings that route's vehicles to full opacity and a larger radius while
+dimming every other bus, and switches the `mta_bus` layer on if it was off.
+
+## Borough filter
+
+The sidebar's borough chips (`#borough-filter` in `index.html`, wired by `initBoroughFilter`
+in `map-layers.js`) narrow the three layers whose records carry a clean borough field: DOT
+cameras (`Camera.area`), 311 requests (`ServiceRequest.borough`), and restaurant inspections
+(`RestaurantInspection.boro`). The comparison is case-insensitive because those three fields
+do not agree on case. Subway, camera density, Citi Bike, and buses have no comparable field
+and are unaffected. Selecting a borough also updates the three affected layers' sidebar counts
+to `"<drawn> of <total> <noun> · <borough>"` so the count next to each checkbox never
+disagrees with what is actually drawn on the map.
+
+## Service alerts and route highlighting
+
+A collapsible sidebar section (`static/js/alerts-banner.js`) lists active MTA subway service
+alerts, fetched from `/api/mta_subway_alerts?limit=200` and polled independently every 60 s
+(alerts change far less often than train positions, so this does not share the map layers'
+15 s cadence). Each alert shows route chips colored to match the same palette `subwayLayer`
+and the route-shapes backdrop use, its header text, and when it started; the count badge uses
+the envelope's `total_before_filter`, not the page size, so a truncated response is never
+presented as the full total. Clicking a route chip sets the shared `highlightedRoute` value,
+which brings that route's static GTFS shapes (see below) to full opacity and a thicker stroke
+on the map while dimming every other route's shapes; clicking the same chip again clears it.
+
+## Static subway route shapes
+
+`mta_subway_shapes` (24 hour TTL) is fetched once at boot rather than on the map layers'
+poll/SSE cycle, since a day-old static bundle has no reason to be re-polled every 15 s. It
+draws as a dim PathLayer backdrop under every marker layer and is not one of the toggleable
+sidebar layers; the only way to change how it looks is the alert-chip highlight above.
+
+## Weather alerts
+
+`weather_now`'s `alerts` field surfaces on the header's weather badge (`status-panel.js`):
+when any configured station (Central Park, LaGuardia, JFK) has an active NWS alert, the badge
+takes a severity-based color -- Extreme/Severe read as the same red as a failed feed, plus a
+pulse; Moderate/Minor read as the same amber as a stale one -- and its tooltip names the worst
+active alert. Alerts are aggregated across every station in the envelope, not just the one
+driving the badge's temperature text, since a coastal station can have an active alert (a rip
+current statement, say) while the station chosen for the headline temperature shows clear
+skies. Clicking the badge opens a popover listing every active alert (event, severity,
+headline, area, station) above the existing short forecast list; an empty `alerts` list is the
+normal case and adds nothing to the badge or the popover.
+
+## Shareable map URLs
+
+The map's center and zoom are kept in the URL hash as `#zoom/lat/lon` (`static/js/app.js`,
+e.g. `#12.40/40.73570/-73.99110`), written with `history.replaceState` (never `pushState`, so
+panning does not spam browser back-button history) about 200 ms after each `moveend`. Loading
+a URL with a hash restores that view instead of the default city-wide one; a malformed or
+absent hash falls back to the default view rather than erroring. A copy-link map control
+(top-left, below the zoom and recenter controls) copies `location.href` to the clipboard and
+shows a checkmark or a warning glyph depending on whether the clipboard write succeeded.
+
+## Detail panel
+
+One persistent panel (`static/js/detail-panel.js`) is reused by every clickable layer
+(subway, 311, Citi Bike, DOT cameras, restaurant inspections, buses) rather than a bespoke UI
+per layer. It carries `role="dialog"` and `aria-modal="true"`, traps Tab/Shift+Tab focus to
+its own focusable elements while open, and restores focus to whatever triggered it (a clicked
+marker, a search result, or a documented fallback) when it closes. An open panel stays live:
+it is re-rendered from every subsequent feed refresh (poll or SSE) so a train's ETA or a bus's
+next stop keeps counting down instead of freezing at the moment it was clicked; if the tracked
+record drops out of the feed entirely, the panel shows an explicit "no longer tracked" message
+instead of leaving stale data on screen.
+
+## Mobile layout
+
+Below 900px width, `chrome.css` stacks the map above the sidebar panel instead of placing them
+side by side. Below 480px the panel becomes a docked bottom sheet: the map fills the full
+viewport underneath and the panel overlays its bottom edge with its own independent scroll and
+a drag-handle affordance, so the map never moves while the sheet's own contents (search,
+borough filter, alerts, layers) scroll independently of it. Map controls grow to a 44px touch
+target at this width.
+
+## Color palette
+
+Marker colors (`static/js/map-layers.js`) follow a documented categorical/sequential/status
+palette rather than being picked ad hoc: subway and bus route colors reuse the real MTA line
+colors (kept recognizable to riders who already know them), restaurant grades reuse the same
+colors as the fresh/stale/error status pills, and the Citi Bike fill ramp is a sequential blue
+scale. Comments in `map-layers.js` record which color pairs were checked against
+colorblind-simulated contrast floors, and which known limits (for example, that ten subway
+line colors cannot all be pairwise distinct under every color-vision deficiency simultaneously)
+were accepted rather than solved by drifting away from the real MTA colors.
+
 ## Frontend assets
 
-One `index.html`, one `app.js`, one `style.css`, no build step. The map libraries are loaded
-from pinned CDN URLs:
+One `index.html`, no build step, and a set of plain `<script defer>` files loaded in
+dependency order (`static/js/`): `utils.js`, `icons.js`, `state.js` (shared mutable state:
+the map instance, the per-feed `state` map, and cross-file globals like `highlightedRoute`
+and `selectedBorough`), `map-layers.js` (marker colors, the deck.gl layer builders, the `FEEDS`
+table), `alerts-banner.js`, `status-panel.js` (the sidebar layer list and header badges),
+`detail-panel.js`, `search.js`, `data-sync.js` (fetch/poll/SSE wiring), and `app.js` (boot,
+loaded last). Stylesheets (`static/css/`): `tokens.css`, `chrome.css`, `layers-panel.css`,
+`search.css`, `detail-panel.css`, `alerts-banner.css`. The map libraries are loaded from
+pinned CDN URLs:
 
 * `https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css` and `.../maplibre-gl.js`
 * `https://unpkg.com/deck.gl@9.0.0/dist.min.js`
@@ -175,11 +293,15 @@ the server. If the CDN scripts fail to load, `initMap` shows a banner saying so 
 pills keep working without a map; if the style or tiles fail, a banner says the basemap is
 unavailable and the data layers keep updating.
 
-Layers: subway trains drawn at their next stop's coordinates (a ScatterplotLayer coloured by
-route; the coordinates come from the static stops feed, nothing is interpolated between
-stations), camera density (a HeatmapLayer weighted by person mean plus vehicle mean), 311
-requests, Citi Bike stations coloured by how full they are, DOT camera locations, and the
-weather badge in the header.
+Toggleable layers (`FEEDS` in `map-layers.js`): subway trains drawn at their next stop's
+coordinates (a ScatterplotLayer coloured by route; the coordinates come from the static stops
+feed, nothing is interpolated between stations), camera density (a HeatmapLayer weighted by
+person mean plus vehicle mean), 311 requests, Citi Bike stations coloured by how full they are
+(zoomed-out stations decluttered by shrinking and fading near-empty ones), DOT camera
+locations, restaurant inspections coloured by grade, and MTA buses coloured by the subway line
+palette their route falls back to. Underneath all of these, static GTFS subway route shapes
+(`mta_subway_shapes`) draw as a dim, always-on PathLayer backdrop; they are not one of the
+toggleable `FEEDS` entries. The weather badge lives in the header, not on the map.
 
 ## Measured numbers
 
@@ -188,7 +310,7 @@ response times from the app only: no upstream fetch and no browser rendering is 
 
 | Path | Measured |
 |------|----------|
-| the three static documents (`index.html`, `app.js`, `style.css`) | 7.5 ms total |
+| the static documents (`index.html` plus `js`/`css` assets, measured pre-refactor as three files) | 7.5 ms total |
 | per-feed `/api/<feed>` endpoints | 1.3 to 1.5 ms median |
 | `/api/density` (through DuckDB) | 4.6 ms |
 | `/api/health` | 1.3 ms |
@@ -229,6 +351,7 @@ The last two need only playwright, since they block the CDN on purpose.
 `tests/dash/` drives the app through `TestClient` and `httpx.ASGITransport` with fake adapters
 behind the real `CachedFeed`, so no network and no on-disk DuckDB is touched: `test_api.py`
 (routing, geo filtering, argument validation), `test_stream.py` (SSE framing and arguments),
-`test_degradation.py` (per-feed fresh, stale and error behaviour), `test_frontend.py` (the
-static assets and the degradation strings in `app.js`), `test_cli.py`, and
-`test_first_paint.py` (the browser gate above, marked `slow`).
+`test_degradation.py` (per-feed fresh, stale and error behaviour), `test_frontend.py` (reads
+every file under `static/js/` and `static/css/` and asserts on the degradation strings, the
+script load order, and the search/borough/alerts/detail-panel behaviour described above),
+`test_cli.py`, and `test_first_paint.py` (the browser gate above, marked `slow`).

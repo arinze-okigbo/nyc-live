@@ -136,6 +136,22 @@ Returns `Envelope[SubwayAlert]` from `FeedName.MTA_SUBWAY_ALERTS` (60 s TTL): `i
 
 When a feed is down: `stale` serves the last alerts; `error` means the alerts feed is unavailable. If the stop list is in `error` while a point was given, the alerts come back unfiltered and `query` is left `null` to signal that no geo filter was applied.
 
+### `subway_route_shapes`
+
+Parameters: `route_id` (for example `1` or `A`; case-sensitive, exactly as GTFS publishes it), `limit` (default 500).
+
+Returns `Envelope[SubwayRouteShape]` from `FeedName.MTA_SUBWAY_SHAPES` (24 hour TTL, the same static bundle and cadence as `mta_subway_stops`): one record per `shape_id` with an ordered `points` list of `(lat, lon)` pairs, plus `route_id` and `direction` (`N`/`S`). A route has many shapes -- branches, express/local segments, both directions, from 2 up to 35 in the live bundle -- never one polyline per route; group results by `route_id` to draw every shape belonging to a route, or read one `shape_id` for a single exact path. A shape has no single lat/lon of its own (it is a polyline, not a point), so `lat`/`lon`/`radius_m` geo-filtering is not offered here; filter by `route_id` instead.
+
+When the feed is down: `stale` means these are the last-fetched shapes (rare, given the 24 h TTL) with the error attached; `error` means the static GTFS bundle could not be fetched or parsed (implemented by `SubwayShapesAdapter` in `src/nyc_live/feeds/transit.py`).
+
+### `bus_positions`
+
+Parameters: `lat`, `lon`, `radius_m` (default 1000), `route_id` (matched case-insensitively as a substring of the upstream's raw SIRI line ref, e.g. `M15` matches `MTA NYCT_M15`), `limit` (default 100).
+
+Returns `Envelope[BusVehicle]` from `FeedName.MTA_BUS` (SIRI VehicleMonitoring, 30 s TTL): `vehicle_id`, `route_id`, `trip_id`, `lat`, `lon`, `bearing`, `timestamp`, and -- present on about 99.9% of active buses, `null` on the rest -- `next_stop_id`, `next_stop_name`, `next_stop_eta`, `next_stop_distance_m`, `stops_away`, and `occupancy` (a free-text string such as `manySeatsAvailable`). With `lat`/`lon`, only buses within `radius_m` are returned, nearest first with `distance_m` set; otherwise the first `limit` of all active buses system-wide (`BusPositionsAdapter` in `src/nyc_live/feeds/bus.py`).
+
+This feed is key-gated on `MTA_BUS_TIME_API_KEY`: until that env var is set, every call returns `status="error"` with `error.kind="not_configured"` and no records; that is expected, not a bug. An upstream `ErrorCondition` (e.g. a rejected key) arrives as an HTTP 200 and is surfaced as `error.kind="upstream_http"`. `status="stale"` serves the last good positions with the error attached explaining why the refresh failed; other `error` kinds mean MTA Bus Time was unreachable or returned something unparseable.
+
 ### `citibike_status`
 
 Parameters: `lat`, `lon`, `radius_m` (default 1000), `limit` (default 50).
@@ -156,7 +172,7 @@ When the feed is down: `stale` serves the last page set; `error` means `data.cit
 
 Parameters: `lat`, `lon`, `radius_m` (default 50 000), `limit` (default 10).
 
-Returns `Envelope[WeatherReport]` from `FeedName.WEATHER` (5 minute TTL): one record per NWS observation station resolved from the Central Park, LaGuardia, and JFK lookup points (`WeatherAdapter` in `src/nyc_live/feeds/weather.py`), each with `station_id`, `station_name`, `lat`, `lon`, an `observation` (`observed_at`, `text`, `temperature_c`, `dewpoint_c`, `humidity_pct`, `wind_speed_kmh`, `wind_gust_kmh`, `wind_direction_deg`, `pressure_pa`, `visibility_m`, `precip_last_hour_mm`; `null` when weather.gov reports null) and a short `forecast` list. The default 50 km radius means the nearest station is always included.
+Returns `Envelope[WeatherReport]` from `FeedName.WEATHER` (5 minute TTL): one record per NWS observation station resolved from the Central Park, LaGuardia, and JFK lookup points (`WeatherAdapter` in `src/nyc_live/feeds/weather.py`), each with `station_id`, `station_name`, `lat`, `lon`, an `observation` (`observed_at`, `text`, `temperature_c`, `dewpoint_c`, `humidity_pct`, `wind_speed_kmh`, `wind_gust_kmh`, `wind_direction_deg`, `pressure_pa`, `visibility_m`, `precip_last_hour_mm`; `null` when weather.gov reports null), a short `forecast` list, and `alerts`: any currently active NWS `alerts.weather.gov` entries for the station's area (heat advisories, flood warnings, and the like), each with `id`, `event`, `headline`, `severity` (`Extreme`/`Severe`/`Moderate`/`Minor`/`Unknown`), `urgency`, `area_desc`, `effective`, `expires`. An empty `alerts` list is the normal, common case, not a failure. The default 50 km radius means the nearest station is always included.
 
 When the feed is down: a single failing lookup point is skipped and logged; the snapshot still succeeds with the others. `error` means no station could be fetched at all, and `error.message` lists the reason per lookup point.
 
@@ -197,6 +213,12 @@ When it cannot answer: until nyc-vision has written rows, `status="error"`, `err
 Parameters: `camera_id`, `lat`, `lon`, `radius_m` (default 1000), `hours` (default 24), `bucket_s` (default 900), `limit` (default 500).
 
 Returns `Envelope[CameraDensity]`, one record per (camera, bucket) with `window_start`/`window_end` set to the bucket bounds, ordered by camera then time. `limit` caps the number of rows and sets `truncated`. Failure behaviour is the same as `density_now`.
+
+### `camera_density_history`
+
+Parameters: `camera_id` (required), `since_s` (default 3600), `bucket_s` (optional; defaults to about `since_s / 120`, minimum 30 s, so a chart gets roughly 120 points), `limit` (default 500).
+
+Returns `Envelope[CameraDensity]`, one record per time bucket over the trailing `since_s` seconds for `camera_id`: `person_mean`, `vehicle_mean`, `person_max`, `vehicle_max`, `sample_count`, `window_start`, `window_end`, `latest_ts`. This is `density_history` narrowed to one required camera with chart-friendly bucketing; use `density_history` directly for multi-camera or geo-filtered queries. `status="error"`, `error.kind="not_configured"` until nyc-vision has written `density_samples` for this camera; `error.kind="internal"` means `camera_id` was empty or the DuckDB file could not be opened.
 
 ## DuckDB store policy
 
