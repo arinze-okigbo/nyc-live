@@ -3,6 +3,8 @@
 * `frame_failure_rate` - the <2 % gate, straight off `camera_frame_fetches`.
 * `cameras_covered`    - the >=50 cameras / 24 h continuity gate, off `density_samples`.
 * `hourly_rush`        - per-hour person and vehicle means, the input to the chart.
+* `camera_history`     - per-frame person and vehicle counts for one camera, the input
+  to a per-camera trend line.
 
 Every function returns exactly what the tables hold in the window; an empty window
 returns zero counts and `None` timestamps, never a fabricated series.
@@ -72,6 +74,16 @@ SELECT camera_id,
 FROM density_samples
 WHERE ts >= ? AND ts < ?
 GROUP BY camera_id, ts
+"""
+
+_CAMERA_HISTORY_SQL = f"""
+SELECT epoch_ms(ts),
+       SUM(CASE WHEN class = '{_PERSON}' THEN count ELSE 0 END),
+       SUM(CASE WHEN class IN ({_VEHICLES_SQL}) THEN count ELSE 0 END)
+FROM density_samples
+WHERE camera_id = ? AND ts >= ? AND ts < ?
+GROUP BY ts
+ORDER BY ts
 """
 
 
@@ -285,3 +297,39 @@ def rush_summary(rows: Sequence[HourlyRush]) -> str:
             f"vehicle {peak.vehicle_mean:.2f})"
         )
     return "rush profile: " + "; ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Per-camera history (the dashboard trend line)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CameraHistoryPoint:
+    """One frame of one camera's history: person and vehicle counts at `ts`."""
+
+    ts: datetime
+    person_count: int
+    vehicle_count: int
+
+
+def camera_history(
+    store: Store, camera_id: str, since: datetime, until: datetime
+) -> list[CameraHistoryPoint]:
+    """Per-frame person and vehicle counts for a single camera, oldest first.
+
+    A "frame" is one (camera_id, ts): the class rows for one detection, summed into
+    person and vehicle counts exactly as `hourly_rush` does (bicycles excluded, same
+    as everywhere else in this module). Meant for a trend line on a single camera,
+    e.g. when a user clicks it on the map. An empty window returns an empty list,
+    never a fabricated point.
+    """
+    rows = store.execute(_CAMERA_HISTORY_SQL, [camera_id, since, until])
+    return [
+        CameraHistoryPoint(
+            ts=datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC),
+            person_count=int(persons or 0),
+            vehicle_count=int(vehicles or 0),
+        )
+        for ts_ms, persons, vehicles in rows
+    ]

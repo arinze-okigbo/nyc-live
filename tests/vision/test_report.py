@@ -7,6 +7,7 @@ from nyc_live.contracts import CameraFrameFetch, DensitySample, DetectionClass
 from nyc_live.store import Store
 from nyc_vision.report import (
     GATE_MAX_FAILURE_RATE,
+    camera_history,
     cameras_covered,
     day_bounds_utc,
     frame_failure_rate,
@@ -230,3 +231,46 @@ def test_rush_summary_names_both_peaks(store: Store) -> None:
 
 def test_rush_summary_with_no_rows() -> None:
     assert "no density_samples rows" in rush_summary([])
+
+
+# -- camera_history ---------------------------------------------------------
+
+
+def test_camera_history_returns_per_frame_counts_oldest_first(store: Store) -> None:
+    base = datetime.now(UTC) - timedelta(hours=1)
+    insert_frame(store, "cam-a", base, persons=3, cars=1)
+    insert_frame(store, "cam-a", base + timedelta(minutes=10), persons=5, cars=2)
+
+    points = camera_history(store, "cam-a", base - timedelta(minutes=1), datetime.now(UTC))
+    assert [p.person_count for p in points] == [3, 5]
+    assert [p.vehicle_count for p in points] == [1, 2]
+    assert points[0].ts < points[1].ts
+
+
+def test_camera_history_only_returns_the_requested_camera(store: Store) -> None:
+    base = datetime.now(UTC) - timedelta(minutes=30)
+    insert_frame(store, "cam-a", base, persons=1, cars=0)
+    insert_frame(store, "cam-b", base, persons=99, cars=99)
+
+    points = camera_history(store, "cam-a", base - timedelta(minutes=1), datetime.now(UTC))
+    assert len(points) == 1
+    assert points[0].person_count == 1
+    assert points[0].vehicle_count == 0
+
+
+def test_camera_history_respects_the_window(store: Store) -> None:
+    old = datetime.now(UTC) - timedelta(days=2)
+    recent = datetime.now(UTC) - timedelta(minutes=5)
+    insert_frame(store, "cam-a", old, persons=1, cars=1)
+    insert_frame(store, "cam-a", recent, persons=2, cars=2)
+
+    points = camera_history(store, "cam-a", recent - timedelta(minutes=1), datetime.now(UTC))
+    assert len(points) == 1
+    assert points[0].person_count == 2
+
+
+def test_camera_history_with_no_rows_returns_empty_list(store: Store) -> None:
+    points = camera_history(
+        store, "cam-unknown", datetime.now(UTC) - timedelta(hours=1), datetime.now(UTC)
+    )
+    assert points == []
