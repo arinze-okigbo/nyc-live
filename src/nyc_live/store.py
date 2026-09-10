@@ -220,8 +220,16 @@ class Store:
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{day.isoformat()}.parquet"
         with self._lock:
+            # `AT TIME ZONE 'UTC'` is load-bearing, not decoration. Every ts column is
+            # TIMESTAMPTZ and every caller passes a UTC-derived `day` (contracts.now_utc),
+            # but a bare CAST(ts AS DATE) resolves in DuckDB's *session* timezone. In
+            # America/New_York that silently disagrees with UTC for the four or five hours
+            # each evening after local midnight has yet to arrive but UTC's has passed --
+            # so a row written at 00:30Z landed under the previous local date and this
+            # COPY wrote an EMPTY parquet file for the day it was asked to archive.
+            # Caught by the suite failing only when run after 20:00 ET.
             self.conn.execute(
-                f"COPY (SELECT * FROM {table} WHERE CAST({ts_col} AS DATE) = ?) "
+                f"COPY (SELECT * FROM {table} WHERE CAST({ts_col} AT TIME ZONE 'UTC' AS DATE) = ?) "
                 f"TO '{out}' (FORMAT PARQUET)",
                 [day],
             )
