@@ -81,6 +81,61 @@ wasted per load); mta_bus cold fetch blocked 9.7s and 28.5s inline.
 
 ---
 
+## Camera / media constraints (MEASURED — do not re-derive)
+
+- **No video stream exists.** DOT's own Angular bundle (1,027,933 B) has zero
+  matches for m3u8/hls/rtsp/webrtc/mjpeg/dash. `/stream`, `/video`, `/index.m3u8`,
+  `/hls` all 404. Snapshot polling IS the design, including in DOT's own grid.
+- **Poll at 2s.** Measured inter-frame gap: 2.06–2.19s for most cameras, 5.13s for
+  some. Faster is pure waste. `cache-control: no-store`, so `?t=` is unnecessary.
+- **No quality parameter.** `?w=1280`, `?size=large`, `?quality=100` all return
+  byte-identical bytes. The ONLY honest route to "better quality" is *selecting the
+  higher-res cameras*: of 973 surveyed, 821 are 352×240 but **121 are ≥640px**,
+  incl. 23 at 1920×1080 and one 4K (BQE @ Kosciuszko, ~1.0 MB/frame — exclude or
+  poll slowly). Build an HD-wall preset from those 121, mostly highway cams.
+- **No CORS header.** `<img>` display works; `canvas.getImageData`,
+  `createImageBitmap`+WebGL, and ANY client-side upscaler or CV are blocked by
+  canvas tainting. `crossorigin` fails the load. Client-side WebGL/WebGPU
+  upscaling is off the table — CSS `image-rendering` only, and label it upscaled.
+  `X-Frame-Options: DENY`, so their multiview page cannot be iframed.
+- **ToS forbids proxying.** The subscriber agreement §6: *"Transferring the
+  contents of the Department's web service directories, in whole or in part, to
+  the User's site is not permitted."* §5 limits permitted use, §4 requires
+  attribution, §7 lets DOT kill cameras without notice. **Browser-direct `<img>`
+  is the sanctioned mode; do NOT proxy or cache frames through our origin.**
+  This also structurally reinforces docs/privacy.md — no frames touch our server.
+- **Scaling is bandwidth-bound, not connection-bound.** Origin serves HTTP/2, so
+  the HTTP/1.1 6-per-origin limit does not apply. 36 cams staggered @0.5Hz: 714
+  requests, 0 errors, 2.94 Mbit/s, p95 57ms. 25-tile SD ≈1.8 Mbit/s; 25-tile
+  1080p ≈19.5 Mbit/s — that is the real ceiling.
+- **Undocumented but open:** `POST /cameras/graphql` (no auth) exposes
+  `preset(presetId){cameraIds}` backing DOT's own grid, and `mapSettings`.
+
+## Scanner audio — NO-GO for embedding (do not retry)
+
+- NYPD's digital rollout has encrypted precincts borough-by-borough since 2024;
+  Citywide 1/2/3 and Transit stay open. Local Law 46-2026 grants *credentialed
+  press* access to encrypted feeds — not public access.
+- `audio.broadcastify.com/<id>.mp3` → **401**. Their ToS §9(d) requires a
+  commercial licence for *any* embedding/relay/re-streaming; API access only via
+  their developer programme; they monitor for programmatic use.
+- OpenMHz: `api.openmhz.com/systems` → Cloudflare challenge, `/systems` → 403.
+  Also archives, not live.
+- **Honest options only:** a plain hyperlink out to Broadcastify's player (a link
+  is not embedding), or your own RTL-SDR (legal to receive, but moves the
+  retransmission question onto you). Ship as a link-out tile or not at all.
+
+## Verified-live feeds worth adding (all HTTP 200, checked)
+
+NWS alerts/obs (`api.weather.gov`, CORS `*`); USGS NWIS water; NOAA CO-OPS tides
+(Battery 8518750); USGS quakes; MTA `camsys%2Fsubway-alerts.json`; NYC DOT link
+speeds (Socrata `i4gi-tjb9`); NEXRAD radar tiles (mesonet.agron.iastate.edu);
+NWS radar WMS. **No CORS, must go via backend:** ConEd outage map (undocumented,
+fragile), ADS-B aircraft (`api.adsb.lol`, ODbL, ~1s).
+Dead: DEP beach `8ndv-hxh2` → 404; harbor water `5uug-f49n` newest row **2006**;
+`api.mta.info/GTFS.json` → 403. Do NOT use `collector-otp-prod.camsys-apps.com`
+— it needs an apikey scraped from MTA's own site.
+
 ## Do-not-retry (measured, doesn't work / already correct)
 
 - **Do not "optimize" these — measured fine:** panning/zoom 60fps with every layer
