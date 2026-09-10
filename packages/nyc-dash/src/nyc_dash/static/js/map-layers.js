@@ -683,6 +683,133 @@ function inspectionsLayer(envelope) {
   });
 }
 
+// 511NY ranks almost nothing: 823 of ~894 live NYC events come back `unknown`, because
+// the feed carries three different publishers and only some of them grade severity.
+// Grey therefore means "upstream did not rank this", NOT "this is fine" -- inventing a
+// rank for an unranked incident would be fabricating the one field a reader would act on.
+function incidentColor(severity) {
+  if (severity === "major" || severity === "moderate") return STATUS_CRITICAL;
+  if (severity === "minor") return GRADE_B;
+  return MUTED_INK;
+}
+
+function ny511Layer(envelope) {
+  const data = located(envelope.records);
+  if (!data.length) return null;
+  return markerLayer({
+    id: "ny511",
+    iconKey: "incident",
+    data,
+    pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
+    radiusUnits: "meters",
+    getPosition: (d) => [d.lon, d.lat],
+    getRadius: 40,
+    radiusMinPixels: 2,
+    radiusMaxPixels: 9,
+    // Severity is a category, not a scale that eases -- no transition.
+    getFillColor: (d) => [...incidentColor(d.severity), 210],
+    getLineColor: [255, 255, 255, 100],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    updateTriggers: { getFillColor: envelope.fetched_at },
+  });
+}
+
+// An outage scheduled for tonight is not a broken elevator now. Colouring both the same
+// would tell a rider the lift is out when it is working, which is the distinction the
+// feed exists to carry, so the two states never share a colour.
+function outageColor(record) {
+  return record.is_upcoming ? GRADE_B : STATUS_CRITICAL;
+}
+
+function elevatorLayer(envelope) {
+  const data = located(envelope.records);
+  if (!data.length) return null;
+  return markerLayer({
+    id: "elevators",
+    iconKey: "elevator",
+    data,
+    pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
+    radiusUnits: "meters",
+    getPosition: (d) => [d.lon, d.lat],
+    getRadius: 40,
+    radiusMinPixels: 2,
+    radiusMaxPixels: 9,
+    getFillColor: (d) => [...outageColor(d), 215],
+    getLineColor: [255, 255, 255, 100],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    updateTriggers: { getFillColor: envelope.fetched_at },
+  });
+}
+
+// The EPA publishes six AQI bands. These are mapped onto the three steps the validated
+// palette can express honestly rather than inventing three more hues for bands NYC
+// rarely reaches -- the exact number is in the tooltip and the detail panel either way.
+const AQI_MODERATE = 51;
+const AQI_UNHEALTHY = 101;
+
+function aqiColor(aqi) {
+  if (aqi == null) return MUTED_INK;
+  if (aqi < AQI_MODERATE) return GRADE_A;
+  if (aqi < AQI_UNHEALTHY) return GRADE_B;
+  return STATUS_CRITICAL;
+}
+
+// The EPA's own band names, kept verbatim so the wording matches what a reader will find
+// on airnow.gov rather than a paraphrase of it. Above 150 the bands keep going
+// (Very Unhealthy, Hazardous); those are named too rather than lumped into one ceiling.
+function aqiBand(aqi) {
+  if (aqi == null) return "no reading";
+  if (aqi < AQI_MODERATE) return "Good";
+  if (aqi < AQI_UNHEALTHY) return "Moderate";
+  if (aqi < 151) return "Unhealthy for Sensitive Groups";
+  if (aqi < 201) return "Unhealthy";
+  if (aqi < 301) return "Very Unhealthy";
+  return "Hazardous";
+}
+
+function airQualityLayer(envelope) {
+  const data = located(envelope.records);
+  if (!data.length) return null;
+  return markerLayer({
+    id: "airquality",
+    iconKey: "air_quality",
+    data,
+    pickable: true,
+    autoHighlight: true,
+    highlightColor: HOVER_HIGHLIGHT,
+    radiusUnits: "meters",
+    getPosition: (d) => [d.lon, d.lat],
+    getRadius: 300,
+    radiusMinPixels: 4,
+    radiusMaxPixels: 16,
+    // AQI does move continuously hour to hour, so this one earns an eased transition.
+    getFillColor: (d) => [...aqiColor(d.us_aqi), 215],
+    transitions: { getFillColor: UPDATE_TRANSITION_MS },
+    getLineColor: [255, 255, 255, 120],
+    lineWidthMinPixels: 1,
+    stroked: true,
+    updateTriggers: { getFillColor: envelope.fetched_at },
+  });
+}
+
+/** "N of M placed" whenever a feed carries records it could not put on the map.
+ *
+ * Elevator outages join a station *name* to GTFS stops, and a few never match
+ * confidently (two stations really do share a name). Those rows are real and still
+ * count, so the sidebar says so rather than quietly reporting the smaller number as
+ * though it were the whole feed. */
+function placedCountLabel(records, noun) {
+  const placed = located(records).length;
+  if (placed === records.length) return `${placed} ${noun}`;
+  return `${placed} of ${records.length} ${noun} mapped`;
+}
+
 const FEEDS = [
   {
     key: "subway_arrivals",
@@ -739,6 +866,38 @@ const FEEDS = [
     defaultVisible: false, // dense data; opt-in like DOT cameras
     build: busLayer,
     count: (env) => `${env.records.length} buses`,
+  },
+  {
+    key: "ny511_events",
+    label: "Traffic incidents",
+    query: "limit=1000", // ~893 NYC events today, of ~2400 statewide
+    defaultVisible: false, // dense data; opt-in like DOT cameras
+    build: ny511Layer,
+    count: (env) => `${env.records.length} incidents`,
+  },
+  {
+    key: "mta_elevator_outages",
+    label: "Elevator outages",
+    query: "limit=500",
+    defaultVisible: false,
+    build: elevatorLayer,
+    // Both halves matter to a rider planning a trip, and they are not the same claim.
+    count: (env) => {
+      const out = env.records.filter((r) => !r.is_upcoming).length;
+      const soon = env.records.length - out;
+      return `${placedCountLabel(env.records, "outages")} · ${out} out now, ${soon} scheduled`;
+    },
+  },
+  {
+    key: "air_quality",
+    label: "Air quality",
+    defaultVisible: true, // five sparse readings; costs nothing and is genuinely useful
+    build: airQualityLayer,
+    count: (env) => {
+      const values = env.records.map((r) => r.us_aqi).filter((v) => v != null);
+      if (!values.length) return `${env.records.length} readings`;
+      return `${env.records.length} readings · AQI ${Math.min(...values)}-${Math.max(...values)}`;
+    },
   },
 ];
 
@@ -843,6 +1002,29 @@ function tooltip({ object, layer }) {
     return {
       html: `<b>${escapeHtml(busRouteLabel(object.route_id))} bus</b>${nextStop}<br/>click for details`,
     };
+  }
+  if (layer.id === "ny511") {
+    // Say "unranked" rather than printing the literal "unknown": upstream not grading an
+    // incident is a fact about the feed, not a severity a reader should weigh.
+    const severity =
+      object.severity && object.severity !== "unknown"
+        ? `${escapeHtml(object.severity)} severity`
+        : "severity unranked";
+    return {
+      html: `<b>${escapeHtml(object.event_subtype || object.event_type)}</b><br/>${severity} · click for details`,
+    };
+  }
+  if (layer.id === "elevators") {
+    const state = object.is_upcoming ? "outage scheduled" : "out of service now";
+    return {
+      html: `<b>${escapeHtml(object.station)}</b><br/>${escapeHtml(
+        object.equipment_type
+      )} ${state} · click for details`,
+    };
+  }
+  if (layer.id === "airquality") {
+    const aqi = object.us_aqi == null ? "—" : object.us_aqi;
+    return { html: `<b>AQI ${aqi}</b><br/>US EPA index · click for details` };
   }
   return null;
 }

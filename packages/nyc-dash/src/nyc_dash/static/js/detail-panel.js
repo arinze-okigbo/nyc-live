@@ -85,6 +85,11 @@ const DETAIL_IDENTITY = {
   dot_cameras: (r) => r.id,
   dohmh_inspections: (r) => r.camis,
   mta_bus: (r) => r.vehicle_id,
+  ny511_events: (r) => r.id,
+  mta_elevator_outages: (r) => r.equipment_id,
+  // Air quality has no upstream id: a reading IS its Open-Meteo grid cell, and the
+  // adapter already dedupes to one record per cell, so the coordinate is the identity.
+  air_quality: (r) => `${r.lat},${r.lon}`,
 };
 
 // Shown in place of the panel body when the tracked record has genuinely dropped out of
@@ -96,6 +101,9 @@ const RECORD_GONE_MESSAGES = {
   dot_cameras: "This camera is no longer in the live feed.",
   dohmh_inspections: "This restaurant is no longer in the live feed.",
   nyc_311: "This 311 request is no longer in the live feed.",
+  ny511_events: "This incident has cleared -- 511NY is no longer reporting it.",
+  mta_elevator_outages: "This outage is over -- MTA is no longer reporting it.",
+  air_quality: "This grid cell is no longer being reported.",
 };
 
 // Every identity field above is now 1:1 with a record, including dohmh_inspections'
@@ -863,6 +871,88 @@ function busDetail(record) {
   );
 }
 
+// hhmmss() is time-of-day, which is right for a train two minutes out and wrong for an
+// incident window that can span weeks (a roadwork item's planned_end is routinely months
+// away). These carry the date too.
+function whenLabel(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? escapeHtml(iso) : escapeHtml(d.toLocaleString());
+}
+
+function incidentDetail(record) {
+  openDetailPanel(
+    escapeHtml(record.event_subtype || record.event_type),
+    (body, r) => {
+      const fields = [
+        ["Type", escapeHtml(r.event_type)],
+        // "unranked" rather than the literal "unknown": upstream declining to grade an
+        // incident is a fact about the feed, not a severity to act on.
+        ["Severity", r.severity && r.severity !== "unknown" ? escapeHtml(r.severity) : "unranked"],
+      ];
+      if (r.roadway) fields.push(["Roadway", escapeHtml(r.roadway)]);
+      if (r.direction) fields.push(["Direction", escapeHtml(r.direction)]);
+      if (r.lanes_affected) fields.push(["Lanes", escapeHtml(r.lanes_affected)]);
+      if (r.county) fields.push(["County", escapeHtml(r.county)]);
+      fields.push(["Started", whenLabel(r.started_at)]);
+      if (r.planned_end) fields.push(["Planned end", whenLabel(r.planned_end)]);
+      body.innerHTML =
+        fieldsHtml(fields) +
+        `<p class="detail-subhead">Description</p><p>${escapeHtml(r.description || "—")}</p>`;
+    },
+    "incident",
+    { feedKey: "ny511_events", record }
+  );
+}
+
+function elevatorDetail(record) {
+  openDetailPanel(
+    escapeHtml(record.station),
+    (body, r) => {
+      const fields = [
+        // The headline claim. A scheduled outage is not a broken lift, and a rider
+        // planning a trip needs that distinction before anything else on this panel.
+        ["Status", r.is_upcoming ? "Outage scheduled" : "Out of service now"],
+        ["Equipment", `${escapeHtml(r.equipment_type)} ${escapeHtml(r.equipment_id)}`],
+      ];
+      if (r.routes && r.routes.length) fields.push(["Routes", escapeHtml(r.routes.join(", "))]);
+      if (r.serving) fields.push(["Serves", escapeHtml(r.serving)]);
+      fields.push(["ADA", r.is_ada ? "yes" : "no"]);
+      if (r.reason) fields.push(["Reason", escapeHtml(r.reason)]);
+      fields.push([r.is_upcoming ? "Starts" : "Out since", whenLabel(r.outage_started)]);
+      fields.push(["Back in service", whenLabel(r.estimated_return)]);
+      body.innerHTML = fieldsHtml(fields);
+    },
+    "elevator",
+    { feedKey: "mta_elevator_outages", record }
+  );
+}
+
+function airQualityDetail(record) {
+  openDetailPanel(
+    `Air quality · AQI ${record.us_aqi == null ? "—" : record.us_aqi}`,
+    (body, r) => {
+      const ugm3 = (v) => (v == null ? "—" : `${v} µg/m³`);
+      body.innerHTML =
+        fieldsHtml([
+          ["US AQI", r.us_aqi == null ? "—" : `${r.us_aqi} · ${escapeHtml(aqiBand(r.us_aqi))}`],
+          ["PM2.5", ugm3(r.pm2_5)],
+          ["PM10", ugm3(r.pm10)],
+          ["Ozone", ugm3(r.ozone)],
+          ["Nitrogen dioxide", ugm3(r.nitrogen_dioxide)],
+          ["Observed", whenLabel(r.observed_at)],
+        ]) +
+        // Say where the number is actually from: Open-Meteo snaps a request to its own
+        // ~0.1 degree grid, so this reading can sit a kilometre or two from the marker's
+        // apparent neighbourhood. Presenting it as a street-level measurement would overclaim.
+        `<p class="detail-subhead-note">Modelled hourly for this Open-Meteo grid cell, not a
+         street-level sensor reading.</p>`;
+    },
+    "air_quality",
+    { feedKey: "air_quality", record }
+  );
+}
+
 const DETAIL_BUILDERS = {
   subway: subwayDetail,
   nyc311: service311Detail,
@@ -870,6 +960,9 @@ const DETAIL_BUILDERS = {
   cameras: cameraDetail,
   dohmh: inspectionDetail,
   bus: busDetail,
+  ny511: incidentDetail,
+  elevators: elevatorDetail,
+  airquality: airQualityDetail,
 };
 
 function handleMapClick(info) {

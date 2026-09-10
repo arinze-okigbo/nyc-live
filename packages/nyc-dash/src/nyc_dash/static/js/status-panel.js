@@ -25,6 +25,11 @@ const LAYER_ICON = {
   dot_cameras: { icon: "dot_cameras", color: "#898781" }, // MUTED_INK
   dohmh_inspections: { icon: "dohmh_inspections", color: "#2ecc71" }, // GRADE_A
   mta_bus: { icon: "bus", color: "#f4d35e" }, // ROUTE_COLORS fallback, same as subway_arrivals
+  ny511_events: { icon: "incident", color: "#d97f24" }, // GRADE_B amber, the "minor" step
+  mta_elevator_outages: { icon: "elevator", color: "#ef476f" }, // GRADE_C
+  // --muted slate: a modelled atmospheric value, deliberately not borrowing a status
+  // hue, since the marker colour already carries the AQI band on the map.
+  air_quality: { icon: "air_quality", color: "#8d99ae" },
 };
 
 function layerIconHtml(key) {

@@ -111,6 +111,9 @@
 .icon.layer-marker-dot_cameras { color: #898781; }
 .icon.layer-marker-dohmh_inspections { color: #2ecc71; }
 .icon.layer-marker-mta_bus { color: #f4d35e; }
+.icon.layer-marker-ny511_events { color: #d97f24; }
+.icon.layer-marker-mta_elevator_outages { color: #ef476f; }
+.icon.layer-marker-air_quality { color: #8d99ae; }
 
 /* `min-width` + centered text so the pill occupies the same box for "loading…",
    "fresh", "stale" and "error". Without it the pill's left edge jumped several pixels
