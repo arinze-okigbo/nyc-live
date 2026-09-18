@@ -229,6 +229,7 @@ async def test_311_failure_on_a_later_page_releases_the_cadence_floor(settings: 
         await _second_fetch_elapsed(adapter, "nyc_311 failure on page 3")
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_311_success_path_is_still_throttled(settings: Settings) -> None:
     client = make_client(settings)
     adapter = Nyc311Adapter(client=client, settings=settings)

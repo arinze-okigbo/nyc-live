@@ -5,7 +5,6 @@ __pycache__/
 .ruff_cache/
 .env
 data/
-!data/.gitkeep
 *.duckdb
 *.duckdb.wal
 *.parquet

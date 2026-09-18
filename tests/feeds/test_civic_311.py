@@ -91,6 +91,7 @@ async def test_live_311_most_recent(settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_replay_311_fixture(settings: Settings) -> None:
     body = _load_fixture(FIXTURE)
     adapter, client = _adapter(settings)
@@ -203,6 +204,7 @@ async def test_311_pages_while_page_is_full(settings: Settings) -> None:
     assert [r.unique_key for r in snap.records] == ["a0", "a1", "a2", "b0", "b1", "b2", "c0"]
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_311_paging_stops_at_max_pages(
     settings: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -224,6 +226,7 @@ async def test_311_paging_stops_at_max_pages(
     assert any("stopped paging" in rec.message for rec in caplog.records)
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_app_token_header_only_when_configured(settings: Settings) -> None:
     url = soda_resource_url(settings, DATASET_311)
     body = [_row("1", "2026-09-08T09:15:00.000")]
@@ -244,6 +247,7 @@ async def test_app_token_header_only_when_configured(settings: Settings) -> None
     assert route.calls.last.request.headers["User-Agent"] == settings.user_agent
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_311_keeps_unlocated_rows_and_drops_out_of_bbox(
     settings: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -267,6 +271,7 @@ async def test_311_keeps_unlocated_rows_and_drops_out_of_bbox(
     assert any("dropped 2 rows outside the NYC bbox" in rec.message for rec in caplog.records)
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_311_optional_fields_stay_none(settings: Settings) -> None:
     adapter, client = _adapter(settings)
     url = soda_resource_url(settings, DATASET_311)
@@ -300,6 +305,7 @@ async def test_311_404_is_not_found(settings: Settings) -> None:
     assert exc_info.value.upstream_status == 404
 
 
+@pytest.mark.usefixtures("socrata_clock_2026_09_08")
 async def test_311_5xx_retries_then_succeeds(settings: Settings) -> None:
     adapter, client = _adapter(settings)
     url = soda_resource_url(settings, DATASET_311)

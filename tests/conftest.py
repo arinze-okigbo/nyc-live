@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -76,3 +77,16 @@ def store() -> Iterator[Store]:
 @pytest.fixture
 def fixtures_dir() -> Path:
     return FIXTURES_DIR
+
+
+@pytest.fixture
+def socrata_clock_2026_09_08(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    """Pin the Socrata adapters' clock to the day the civic fixtures were recorded.
+
+    The 311 adapter rejects a snapshot whose newest row is older than its staleness
+    ceiling, so replay tests and any test with a literal 2026-09-08 timestamp must
+    not compare against the real wall clock or they rot a week after recording.
+    """
+    fixed = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr("nyc_live.feeds.socrata.now_utc", lambda: fixed)
+    return fixed
